@@ -33,3 +33,5 @@ app.use('/api/admin/analytics', adminAnalyticsRoutes);
 app.use(errorMiddleware);
 
 module.exports = app;
+
+console.log('cuteness overload');
