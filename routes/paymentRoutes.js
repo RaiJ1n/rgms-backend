@@ -12,7 +12,8 @@ router.post(
   upload.single('screenshot'),
   [
     body('referenceNumber').notEmpty().withMessage('Reference number is required'),
-    body('amount').isNumeric().withMessage('Amount is required'),
+    body('amount').optional().isNumeric().withMessage('Amount must be a number'),
+    body('planId').optional().isMongoId().withMessage('Invalid plan'),
   ],
   paymentController.submitPayment
 );

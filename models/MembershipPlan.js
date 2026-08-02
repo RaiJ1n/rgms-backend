@@ -11,6 +11,10 @@ const planSchema = new mongoose.Schema({
   price: { type: Number, 
           required: true },
 
+  // Discounted price for members with a verified student ID
+  // (User.studentPromoActive). Falls back to `price` if unset.
+  studentPrice: { type: Number },
+
   description: { type: String, 
                   trim: true },
 

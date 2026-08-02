@@ -19,6 +19,7 @@ exports.registerCard = async (req, res, next) => {
 
     card = new RFIDCard({ cardId, userId, assignedAt: new Date() });
     await card.save();
+    socketUtil.emitToUser(userId, 'rfid:updated', { bound: true, cardId: card.cardId, active: card.active });
     return res.status(201).json({ message: 'Card registered', card });
   } catch (err) {
     next(err);
@@ -55,8 +56,17 @@ exports.scanCard = async (req, res, next) => {
       action = 'checkout';
       // audit
       await AuditLog.create({ action: 'rfid_checkout', userId: card.userId._id, meta: { cardId: card.cardId } });
-      // emit socket
-      const io = socketUtil.getIO(); if (io) io.emit('attendance', { userId: card.userId._id, type: 'checkout', at: now });
+      // emit socket — admins get the live feed, the member's own room
+      // gets it too so a future member-facing "you checked out" view has
+      // something to listen for without touching this controller again.
+      const attendanceEvent = {
+        type: 'checkout',
+        at: now,
+        attendance: { _id: attendance._id, checkIn: attendance.checkIn, checkOut: attendance.checkOut },
+        user: { _id: card.userId._id, fullname: card.userId.fullname, email: card.userId.email },
+      };
+      socketUtil.emitToAdmins('attendance', attendanceEvent);
+      socketUtil.emitToUser(card.userId._id, 'attendance', attendanceEvent);
       return res.json({ message: 'Checked out', attendance });
     }
 
@@ -65,7 +75,18 @@ exports.scanCard = async (req, res, next) => {
     // audit
     await AuditLog.create({ action: 'rfid_checkin', userId: card.userId._id, meta: { cardId: card.cardId } });
     // emit socket
-    const io = socketUtil.getIO(); if (io) io.emit('attendance', { userId: card.userId._id, type: 'checkin', at: now });
+    socketUtil.emitToAdmins('attendance', {
+      type: 'checkin',
+      at: now,
+      attendance: { _id: attendance._id, checkIn: attendance.checkIn, checkOut: attendance.checkOut },
+      user: { _id: card.userId._id, fullname: card.userId.fullname, email: card.userId.email },
+    });
+    socketUtil.emitToUser(card.userId._id, 'attendance', {
+      type: 'checkin',
+      at: now,
+      attendance: { _id: attendance._id, checkIn: attendance.checkIn, checkOut: attendance.checkOut },
+      user: { _id: card.userId._id, fullname: card.userId.fullname, email: card.userId.email },
+    });
     return res.json({ message: 'Checked in', attendance });
   } catch (err) {
     next(err);

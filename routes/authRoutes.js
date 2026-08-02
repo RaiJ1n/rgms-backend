@@ -9,7 +9,8 @@ router.post(
   [
     body('fullname').notEmpty().withMessage('Full name is required'),
     body('email').isEmail().withMessage('Valid email is required'),
-    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    body('address').optional().isString().trim(),
   ],
   authController.register
 );
@@ -25,6 +26,18 @@ router.post(
 
 router.post('/logout', authController.logout);
 router.post('/forgot-password', authController.forgotPassword);
-router.post('/reset-password/:token', authController.resetPassword);
+router.post(
+  '/reset-password/:token',
+  [body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters')],
+  authController.resetPassword
+);
+
+// Email verification
+router.get('/verify-email/:token', authController.verifyEmail);
+router.post(
+  '/resend-verification',
+  [body('email').isEmail().withMessage('Valid email is required')],
+  authController.resendVerification
+);
 
 module.exports = router;

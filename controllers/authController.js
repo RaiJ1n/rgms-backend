@@ -9,9 +9,16 @@ const register = async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const { fullname, email, password, phone } = req.body;
-    const { user, token } = await authService.registerUser({ fullname, email, password, phone });
+    const { fullname, email, password, phone, address } = req.body;
+    const { user, token } = await authService.registerUser({ fullname, email, password, phone, address });
+
     await emailService.sendWelcomeEmail(user);
+
+    // Generate + send the email verification link
+    const verificationToken = await authService.createVerificationToken(user);
+    const verifyUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+    await emailService.sendVerificationEmail(user, verifyUrl);
+
     const safeUser = user.toObject();
     delete safeUser.password;
     res.status(201).json({ success: true, message: 'User registered', data: { user: safeUser, token } });
@@ -57,6 +64,9 @@ const forgotPassword = async (req, res, next) => {
 
 const resetPassword = async (req, res, next) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
     const { token } = req.params;
     const { password } = req.body;
     const user = await authService.resetPassword({ token, password });
@@ -67,4 +77,28 @@ const resetPassword = async (req, res, next) => {
   }
 };
 
-module.exports = { register, login, logout, forgotPassword, resetPassword };
+const verifyEmail = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const user = await authService.verifyEmail(token);
+    const safeUser = user.toObject();
+    delete safeUser.password;
+    res.json({ success: true, message: 'Email verified successfully', data: { user: safeUser } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const resendVerification = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const { user, verificationToken } = await authService.resendVerification(email);
+    const verifyUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+    await emailService.sendVerificationEmail(user, verifyUrl);
+    res.json({ success: true, message: 'Verification email resent' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = { register, login, logout, forgotPassword, resetPassword, verifyEmail, resendVerification };
