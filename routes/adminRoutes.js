@@ -8,6 +8,35 @@ const router = express.Router();
 
 router.use(protect, admin);
 router.get('/users', adminController.getUsers);
+
+router.get('/members', adminController.getMembers);
+router.get('/members/:id', adminController.getMember);
+router.put(
+  '/members/:id',
+  [
+    body('fullname').optional().notEmpty(),
+    body('phone').optional().isMobilePhone().withMessage('Enter a valid mobile number'),
+    body('address').optional().isString().trim(),
+    body('email').optional().isEmail().withMessage('Enter a valid email').normalizeEmail(),
+  ],
+  adminController.updateMember
+);
+router.put(
+  '/members/:id/status',
+  [body('isActive').isBoolean().withMessage('isActive must be true or false')],
+  adminController.setMemberStatus
+);
+router.put(
+  '/members/:id/student-promo',
+  [body('studentPromoActive').isBoolean().withMessage('studentPromoActive must be true or false')],
+  adminController.setStudentPromoActive
+);
+router.delete('/members/:id', adminController.deleteMember);
+
+router.get('/notifications', adminController.getNotifications);
+router.put('/notifications/:id/read', adminController.markNotificationRead);
+router.put('/notifications/mark-all-read', adminController.markAllNotificationsRead);
+
 router.get('/payments', adminController.getPayments);
 router.put('/payments/:id/approve', adminController.approvePayment);
 router.put('/payments/:id/reject', adminController.rejectPayment);
@@ -23,5 +52,13 @@ router.post(
 );
 router.put('/plans/:id', adminController.updatePlan);
 router.delete('/plans/:id', adminController.deletePlan);
+
+router.get('/student-ids', adminController.getStudentIdSubmissions);
+router.put('/student-ids/:id/approve', adminController.approveStudentId);
+router.put(
+  '/student-ids/:id/reject',
+  [body('reason').optional().isString().trim()],
+  adminController.rejectStudentId
+);
 
 module.exports = router;

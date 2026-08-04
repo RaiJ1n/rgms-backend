@@ -19,10 +19,10 @@ const protect = async (req, res, next) => {
     token = req.cookies.token;
   }
 
-  // 4) Query string: ?token=...
-  if (!token && req.query && req.query.token) {
-    token = req.query.token;
-  }
+  // Deliberately no ?token=... query-string fallback here — query strings
+  // end up in URLs, browser history, and server/proxy access logs, which
+  // would leak the JWT. Nothing in this app relies on it (no window.open
+  // links for CSV/PDF export etc.), so it's removed rather than fixed.
 
   if (!token) {
     return res.status(401).json({ success: false, message: 'Not authorized, token missing' });

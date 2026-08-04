@@ -16,11 +16,31 @@ const userSchema = new mongoose.Schema({
   role: { type: String, 
     enum: ['user', 'admin'], 
     default: 'user' },
+
+  isActive: { type: Boolean, default: true },
+
+  studentPromoActive: { type: Boolean, default: false },
+
   phone: { type: String, 
     trim: true },
-    
+  address: { type: String,
+    trim: true },
+
+  // Body stats — self-reported, shown on the member Dashboard/Profile.
+  // All optional: a brand-new user won't have these set yet.
+  age: { type: Number, min: 0, max: 120 },
+  heightCm: { type: Number, min: 0 },
+  weightKg: { type: Number, min: 0 },
+  calorieGoal: { type: Number, min: 0 },
+  birthDate: { type: Date },
+
   resetPasswordToken: String,
   resetPasswordExpires: Date,
+
+  // Email verification
+  isVerified: { type: Boolean, default: false },
+  verificationToken: String,
+  verificationTokenExpires: Date,
 }, { timestamps: true });
 
 userSchema.pre('save', async function (next) {

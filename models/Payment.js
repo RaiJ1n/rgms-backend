@@ -5,6 +5,12 @@ const paymentSchema = new mongoose.Schema({
      ref: 'User', 
     required: true },
 
+  // Which plan this payment is for — needed so approving the payment can
+  // automatically activate the matching subscription. Optional because
+  // not every payment necessarily maps to a plan (kept loose on purpose).
+  planId: { type: mongoose.Schema.Types.ObjectId,
+    ref: 'MembershipPlan' },
+
   referenceNumber: { type: String, 
      required: true, 
       trim: true },

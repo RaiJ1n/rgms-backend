@@ -8,6 +8,7 @@ const registerAdmin = async (req, res, next) => {
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
     const { fullname, email, password, phone } = req.body;
+
     const { admin, token } = await adminService.createAdmin({ fullname, email, password, phone });
     if (emailService && emailService.sendWelcomeEmail) await emailService.sendWelcomeEmail(admin);
     const safeAdmin = admin.toObject();

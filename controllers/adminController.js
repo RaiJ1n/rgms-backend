@@ -1,17 +1,22 @@
 const User = require('../models/User');
+const { validationResult } = require('express-validator');
 const Payment = require('../models/Payment');
 const Subscription = require('../models/Subscription');
 const MembershipPlan = require('../models/MembershipPlan');
+const StudentVerification = require('../models/StudentVerification');
+const RFIDCard = require('../models/RFIDCard');
+const Notification = require('../models/Notification');
+const socketUtil = require('../utils/socket');
+const subscriptionService = require('../services/subscriptionService');
 const emailService = require('../services/emailService');
+const escapeRegex = require('../utils/escapeRegex');
+const { parsePagination } = require('../utils/paginate');
 
 const getUsers = async (req, res) => {
-  console.log(req.user.email);
   try {
-    const getAllUsers = await User.find()
-      .populate('client')
-      .exec();
+    const getAllUsers = await User.find().select('-password');
 
-    if (getAllUsers.length == 0) {
+    if (getAllUsers.length === 0) {
       return res.sendStatus(204);
     }
     res.status(200).json({
@@ -20,15 +25,280 @@ const getUsers = async (req, res) => {
     });
   } catch (err) {
     res.status(400).json({
-      content: err,
+      content: err.message,
     });
+  }
+};
+
+// ---- Members (MemberAccount.vue / EditMember.vue) ----
+
+// One subscription lookup shared by getMembers/getMember so "Active" means
+// the same thing in both the list and the detail view: a subscription
+// that's marked active AND hasn't passed its end date yet.
+const deriveStatus = (subscription) => {
+  if (!subscription) return 'Inactive';
+  const isCurrentlyActive = subscription.status === 'active' && subscription.endDate >= new Date();
+  return isCurrentlyActive ? 'Active' : 'Inactive';
+};
+
+const getMembers = async (req, res, next) => {
+  try {
+    const { page, limit, skip, isExport } = parsePagination(req.query);
+    const { search } = req.query;
+
+    const filter = { role: 'user' };
+    if (search) {
+      const re = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [{ fullname: re }, { email: re }];
+    }
+
+    const total = await User.countDocuments(filter);
+    const users = await User.find(filter).select('-password').sort({ createdAt: -1 }).skip(skip).limit(limit);
+    const userIds = users.map((u) => u._id);
+
+    // Most recent subscription per user, newest endDate first, so the
+    // first match per user in this sorted list is the one we want.
+    const subscriptions = await Subscription.find({ userId: { $in: userIds } })
+      .populate('planId', 'name')
+      .sort({ endDate: -1 });
+
+    const latestSubByUser = new Map();
+    for (const sub of subscriptions) {
+      const key = sub.userId.toString();
+      if (!latestSubByUser.has(key)) latestSubByUser.set(key, sub);
+    }
+
+    const members = users.map((u) => {
+      const sub = latestSubByUser.get(u._id.toString());
+      return {
+        _id: u._id,
+        name: u.fullname,
+        email: u.email,
+        mobile: u.phone,
+        plan: sub?.planId?.name || null,
+        status: deriveStatus(sub),
+        accountActive: u.isActive,
+        studentPromoActive: u.studentPromoActive,
+        joined: u.createdAt,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: members,
+      page,
+      limit,
+      total,
+      totalPages: isExport ? 1 : Math.ceil(total / limit),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getMember = async (req, res, next) => {
+  try {
+    const user = await User.findOne({ _id: req.params.id, role: 'user' }).select('-password');
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    const [subscription, rfidCard, studentVerification] = await Promise.all([
+      Subscription.findOne({ userId: user._id }).sort({ endDate: -1 }).populate('planId', 'name'),
+      RFIDCard.findOne({ userId: user._id }),
+      StudentVerification.findOne({ userId: user._id }).sort({ createdAt: -1 }),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        _id: user._id,
+        name: user.fullname,
+        email: user.email,
+        mobile: user.phone,
+        address: user.address,
+        joined: user.createdAt,
+        plan: subscription?.planId?.name || null,
+        status: deriveStatus(subscription),
+        accountActive: user.isActive,
+        studentPromoActive: user.studentPromoActive,
+        rfidCardId: rfidCard ? rfidCard.cardId : null,
+        studentVerification: studentVerification || null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateMember = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const user = await User.findOne({ _id: req.params.id, role: 'user' });
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    const { fullname, phone, address, email } = req.body;
+    if (fullname) user.fullname = fullname;
+    if (phone) user.phone = phone;
+    if (address) user.address = address;
+
+    if (email && email.toLowerCase() !== user.email) {
+      const existing = await User.findOne({ email: email.toLowerCase(), _id: { $ne: user._id } });
+      if (existing) {
+        return res.status(409).json({ success: false, message: 'Email is already in use by another account' });
+      }
+      user.email = email.toLowerCase();
+    }
+
+    await user.save();
+    socketUtil.emitToAdmins('member:updated', { _id: user._id });
+    res.json({ success: true, message: 'Member updated', data: user });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Separate from updateMember on purpose — this toggles login access
+// (isActive), a distinct concept from the subscription-derived status
+// shown in the member list. See User.js for the field's comment.
+const setMemberStatus = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { isActive } = req.body;
+    const user = await User.findOne({ _id: req.params.id, role: 'user' });
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    user.isActive = !!isActive;
+    await user.save();
+    socketUtil.emitToAdmins('member:updated', { _id: user._id });
+    res.json({
+      success: true,
+      message: user.isActive ? 'Account activated' : 'Account deactivated — this member can no longer log in',
+      data: user,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteMember = async (req, res, next) => {
+  try {
+    const user = await User.findOne({ _id: req.params.id, role: 'user' });
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    // Related records (payments, subscriptions, attendance, RFID card)
+    // are intentionally left in place for historical/audit purposes —
+    // only the account itself is removed.
+    await User.findByIdAndDelete(req.params.id);
+    socketUtil.emitToAdmins('stats:refresh');
+    socketUtil.emitToAdmins('member:deleted', { _id: req.params.id });
+    res.json({ success: true, message: 'Member deleted' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// approveStudentId can turn studentPromoActive on, but there was
+// previously no way to turn it back off — e.g. a member's eligibility
+// lapses, or an ID was approved in error. This is the missing other half
+// of that toggle. Deliberately doesn't touch the original
+// StudentVerification submission's status — that record stays an
+// immutable log of what was reviewed and when; this only affects whether
+// the discount is currently in effect.
+const setStudentPromoActive = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { studentPromoActive } = req.body;
+    const user = await User.findOne({ _id: req.params.id, role: 'user' });
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    user.studentPromoActive = !!studentPromoActive;
+    await user.save();
+    socketUtil.emitToAdmins('stats:refresh');
+    socketUtil.emitToAdmins('member:updated', { _id: user._id });
+    res.json({
+      success: true,
+      message: user.studentPromoActive ? 'Student discount activated' : 'Student discount revoked',
+      data: user,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ---- Notifications (admin bell) ----
+
+const getNotifications = async (req, res, next) => {
+  try {
+    const notifications = await Notification.find().sort({ createdAt: -1 }).limit(30);
+    const unreadCount = await Notification.countDocuments({ read: false });
+    res.json({ success: true, data: notifications, unreadCount });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const markNotificationRead = async (req, res, next) => {
+  try {
+    const notification = await Notification.findByIdAndUpdate(req.params.id, { read: true }, { new: true });
+    if (!notification) return res.status(404).json({ success: false, message: 'Notification not found' });
+    socketUtil.emitToAdmins('notification:read', { _id: notification._id });
+    res.json({ success: true, data: notification });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const markAllNotificationsRead = async (req, res, next) => {
+  try {
+    await Notification.updateMany({ read: false }, { read: true });
+    socketUtil.emitToAdmins('notification:all-read', {});
+    res.json({ success: true, message: 'All notifications marked read' });
+  } catch (error) {
+    next(error);
   }
 };
 
 const getPayments = async (req, res, next) => {
   try {
-    const payments = await Payment.find().populate('userId', 'fullname email');
-    res.json({ success: true, data: payments });
+    const { page, limit, skip, isExport } = parsePagination(req.query);
+    const { search, method, status } = req.query;
+
+    const filter = {};
+    if (method && method !== 'All') filter.paymentMethod = method;
+    if (status && status !== 'All') filter.status = status;
+    if (search) {
+      const re = new RegExp(escapeRegex(search), 'i');
+      // referenceNumber lives on Payment itself; name lives on the
+      // referenced User, which Mongo can't match directly in one query —
+      // so look up matching user ids first, then match either field.
+      const matchingUsers = await User.find({ fullname: re }).select('_id');
+      filter.$or = [
+        { referenceNumber: re },
+        { userId: { $in: matchingUsers.map((u) => u._id) } },
+      ];
+    }
+
+    const total = await Payment.countDocuments(filter);
+    const payments = await Payment.find(filter)
+      .populate('userId', 'fullname email phone')
+      .populate('planId', 'name duration')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      success: true,
+      data: payments,
+      page,
+      limit,
+      total,
+      totalPages: isExport ? 1 : Math.ceil(total / limit),
+    });
   } catch (error) {
     next(error);
   }
@@ -38,12 +308,52 @@ const approvePayment = async (req, res, next) => {
   try {
     const payment = await Payment.findById(req.params.id);
     if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
+    if (payment.status !== 'pending') {
+      return res.status(400).json({ success: false, message: `Payment already ${payment.status}` });
+    }
 
     payment.status = 'approved';
     await payment.save();
     await emailService.sendPaymentStatusEmail(await User.findById(payment.userId), payment);
 
-    res.json({ success: true, message: 'Payment approved', data: payment });
+    // The member-facing pages promise membership activates as soon as the
+    // payment is verified — so approving here also creates the
+    // subscription, instead of leaving that as a separate manual step.
+    let subscription = null;
+    let subscriptionError = null;
+    if (payment.planId) {
+      try {
+        subscription = await subscriptionService.createSubscription({
+          userId: payment.userId,
+          planId: payment.planId,
+          paymentId: payment._id,
+        });
+      } catch (subErr) {
+        // Most likely cause: this payment was already approved once and a
+        // subscription already exists for it. Don't fail the whole
+        // approval over that — just surface it so the admin can see it.
+        subscriptionError = subErr.message;
+      }
+    }
+
+    // subscriptionService.createSubscription already emits 'stats:refresh'
+    // when it succeeds; still emit here too so a plain approval — no
+    // planId, or the subscription step failed — still moves the pending
+    // count and revenue total on open admin screens.
+    socketUtil.emitToAdmins('stats:refresh');
+    socketUtil.emitToAdmins('payment:updated', payment);
+    socketUtil.emitToUser(payment.userId, 'payment:updated', payment);
+    // Membership status/plan on the member list & detail page is derived
+    // from the subscription this approval may have just created.
+    socketUtil.emitToAdmins('member:updated', { _id: payment.userId });
+
+    res.json({
+      success: true,
+      message: subscription ? 'Payment approved and membership activated' : 'Payment approved',
+      data: payment,
+      subscription,
+      subscriptionError,
+    });
   } catch (error) {
     next(error);
   }
@@ -53,10 +363,16 @@ const rejectPayment = async (req, res, next) => {
   try {
     const payment = await Payment.findById(req.params.id);
     if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
+    if (payment.status !== 'pending') {
+      return res.status(400).json({ success: false, message: `Payment already ${payment.status}` });
+    }
 
     payment.status = 'rejected';
     await payment.save();
     await emailService.sendPaymentStatusEmail(await User.findById(payment.userId), payment);
+    socketUtil.emitToAdmins('stats:refresh');
+    socketUtil.emitToAdmins('payment:updated', payment);
+    socketUtil.emitToUser(payment.userId, 'payment:updated', payment);
 
     res.json({ success: true, message: 'Payment rejected', data: payment });
   } catch (error) {
@@ -102,8 +418,79 @@ const deletePlan = async (req, res, next) => {
   }
 };
 
+const getStudentIdSubmissions = async (req, res, next) => {
+  try {
+    const { status, userId } = req.query;
+    const filter = {};
+    if (status) filter.status = status;
+    if (userId) filter.userId = userId;
+    const submissions = await StudentVerification.find(filter)
+      .populate('userId', 'fullname email')
+      .sort({ createdAt: -1 });
+    res.json({ success: true, data: submissions });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const approveStudentId = async (req, res, next) => {
+  try {
+    const submission = await StudentVerification.findById(req.params.id);
+    if (!submission) return res.status(404).json({ success: false, message: 'Submission not found' });
+    if (submission.status !== 'pending') {
+      return res.status(400).json({ success: false, message: `Submission already ${submission.status}` });
+    }
+
+    submission.status = 'approved';
+    submission.reviewedBy = req.user._id;
+    await submission.save();
+
+    const user = await User.findByIdAndUpdate(submission.userId, { studentPromoActive: true }, { new: true });
+    if (user) await emailService.sendStudentVerificationEmail(user, true);
+    socketUtil.emitToAdmins('stats:refresh');
+    socketUtil.emitToAdmins('member:updated', { _id: submission.userId });
+
+    res.json({ success: true, message: 'Student ID approved, promo activated', data: submission });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const rejectStudentId = async (req, res, next) => {
+  try {
+    const { reason } = req.body;
+    const submission = await StudentVerification.findById(req.params.id);
+    if (!submission) return res.status(404).json({ success: false, message: 'Submission not found' });
+    if (submission.status !== 'pending') {
+      return res.status(400).json({ success: false, message: `Submission already ${submission.status}` });
+    }
+
+    submission.status = 'rejected';
+    submission.reviewedBy = req.user._id;
+    submission.reviewNote = reason;
+    await submission.save();
+
+    const user = await User.findById(submission.userId);
+    if (user) await emailService.sendStudentVerificationEmail(user, false, reason);
+    socketUtil.emitToAdmins('member:updated', { _id: submission.userId });
+
+    res.json({ success: true, message: 'Student ID rejected', data: submission });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getUsers,
+  getMembers,
+  getMember,
+  updateMember,
+  setMemberStatus,
+  setStudentPromoActive,
+  deleteMember,
+  getNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
   getPayments,
   approvePayment,
   rejectPayment,
@@ -111,4 +498,7 @@ module.exports = {
   createPlan,
   updatePlan,
   deletePlan,
+  getStudentIdSubmissions,
+  approveStudentId,
+  rejectStudentId,
 };
