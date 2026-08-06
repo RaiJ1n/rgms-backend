@@ -29,12 +29,15 @@ const protect = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = await User.findById(decoded.id).select('-password');
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  const user = await User.findById(decoded.id).select('-password');
+    if (!user) return res.status(401).json({ success: false, message: 'Not authorized, user not found' });
+    if (!user.isActive) return res.status(403).json({ success: false, message: 'Account deactivated' });
+    req.user = user;
     next();
-  } catch (error) {
-    return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
-  }
+    } catch (error) {
+      return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
+    }
 };
 
 module.exports = { protect };

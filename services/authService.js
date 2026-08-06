@@ -34,8 +34,10 @@ const registerUser = async ({ fullname, email, password, phone, address }) => {
 
 const loginUser = async ({ email, password }) => {
   const user = await User.findOne({ email });
+  const httpError = (message, statusCode) => { const e = new Error(message); e.statusCode = statusCode; return e; };
+
   if (!user || !(await user.matchPassword(password))) {
-    throw new Error('Invalid email or password');
+    throw httpError('Invalid email or password', 401);
   }
   if (!user.isActive) {
     const err = new Error('This account has been deactivated. Please contact the gym.');

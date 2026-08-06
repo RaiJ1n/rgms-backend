@@ -12,12 +12,17 @@ const register = async (req, res, next) => {
     const { fullname, email, password, phone, address } = req.body;
     const { user, token } = await authService.registerUser({ fullname, email, password, phone, address });
 
-    await emailService.sendWelcomeEmail(user);
+    emailService.sendWelcomeEmail(user).catch((err) =>
+      console.error('Failed to send welcome email:', err.message)
+    );
 
-    // Generate + send the email verification link
-    const verificationToken = await authService.createVerificationToken(user);
-    const verifyUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
-    await emailService.sendVerificationEmail(user, verifyUrl);
+    authService
+      .createVerificationToken(user)
+      .then((verificationToken) => {
+        const verifyUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+        return emailService.sendVerificationEmail(user, verifyUrl);
+      })
+      .catch((err) => console.error('Failed to send verification email:', err.message));
 
     const safeUser = user.toObject();
     delete safeUser.password;
@@ -50,13 +55,19 @@ const forgotPassword = async (req, res, next) => {
   try {
     const { email } = req.body;
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const resetToken = await authService.createResetToken(user);
-    const resetUrl = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
-    await emailService.sendForgotPasswordEmail(user, resetUrl);
+    if (user) {
+      const resetToken = await authService.createResetToken(user);
+      const resetUrl = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
+      emailService.sendForgotPasswordEmail(user, resetUrl).catch((err) =>
+        console.error('Failed to send forgot-password email:', err.message)
+      );
+    }
 
-    res.json({ success: true, message: 'Reset password email sent' });
+    res.json({
+      success: true,
+      message: 'If that email is registered, a password reset link has been sent.',
+    });
   } catch (error) {
     next(error);
   }

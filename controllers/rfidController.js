@@ -113,174 +113,27 @@ exports.registerCard = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// ENDPOINT: Scan RFID Card (from Arduino)
-// ============================================================================
-//
-// Route: POST /api/rfid/scan
-// Auth: Device key (X-Device-Key header)
-// Request Body: { cardId }
-//
-// This endpoint is called by the backend's rfidService when Arduino sends UID.
-// It's exposed here as a fallback endpoint for testing or alternative hardware.
-//
-// Process:
-// 1. Find card by UID
-// 2. Verify card is active
-// 3. Check membership status
-// 4. Determine check-in or check-out
-// 5. Record attendance
-// 6. Broadcast via Socket.IO
-//
-// Error Codes:
-// - 404: Card not found or inactive
-// - 403: No active membership
-// - 429: Duplicate scan within 10 seconds
-//
+const attendanceService = require('../services/attendanceService');
 
 exports.scanCard = async (req, res, next) => {
   try {
     const { cardId } = req.body;
-    
     if (!cardId) {
-      return res.status(400).json({
-        success: false,
-        message: 'cardId is required',
-      });
+      return res.status(400).json({ success: false, message: 'cardId is required' });
     }
-    
-    // Find card (populated with user data)
-    const card = await RFIDCard.findOne({ 
-      cardId: cardId.toUpperCase() 
-    }).populate('userId');
-    
-    if (!card || !card.active) {
-      return res.status(404).json({
-        success: false,
-        message: 'Card not found or inactive',
-      });
-    }
-    
-    const now = new Date();
-    
-    // Duplicate scan prevention (10-second cooldown)
-    if (card.lastScannedAt && (now - card.lastScannedAt) / 1000 < 10) {
-      return res.status(429).json({
-        success: false,
-        message: 'Duplicate scan prevented (wait 10 seconds)',
-      });
-    }
-    
-    // Verify active membership
-    const subscription = await Subscription.findOne({
-      userId: card.userId._id,
-      status: 'active',
-      endDate: { $gte: now },
-    });
-    
-    if (!subscription) {
-      socketUtil.emitToAdmins('rfid:error', {
-        uid: cardId,
-        userId: card.userId._id,
-        fullname: card.userId.fullname,
-        message: 'Membership expired',
-        timestamp: now,
-      });
-      
-      return res.status(403).json({
-        success: false,
-        message: 'No active membership',
-      });
-    }
-    
-    // Update last scan time
-    card.lastScannedAt = now;
-    await card.save();
-    
-    // Get today's attendance record (check for open session)
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    
-    let attendance = await Attendance.findOne({
-      userId: card.userId._id,
-      createdAt: { $gte: startOfDay },
-      checkOut: { $exists: false }, // No checkout yet = still checked in
-    });
-    
-    let action = 'checkin';
-    
-    if (attendance && !attendance.checkOut) {
-      // Already checked in, this is check-out
-      attendance.checkOut = now;
-      await attendance.save();
-      action = 'checkout';
-    } else {
-      // New check-in
-      attendance = new Attendance({
-        userId: card.userId._id,
-        rfidCardId: card._id,
-        checkIn: now,
-      });
-      await attendance.save();
-    }
-    
-    // Audit log
-    await AuditLog.create({
-      action: `rfid_${action}`,
-      userId: card.userId._id,
-      meta: { cardId: card.cardId },
-    });
-    
-    // Build event payload
-    const attendanceEvent = {
-      type: action,
-      at: now,
-      attendance: {
-        _id: attendance._id,
-        checkIn: attendance.checkIn,
-        checkOut: attendance.checkOut,
-      },
-      user: {
-        _id: card.userId._id,
-        fullname: card.userId.fullname,
-        email: card.userId.email,
-      },
-    };
-    
-    // Broadcast to admins (live attendance dashboard)
-    socketUtil.emitToAdmins('attendance', attendanceEvent);
-    
-    // Broadcast to member (their own notification)
-    socketUtil.emitToUser(card.userId._id, 'attendance', attendanceEvent);
-    
+
+    const { action, attendance } = await attendanceService.processScan(cardId);
     const message = action === 'checkin' ? 'Checked in' : 'Checked out';
-    console.log(`[RFID] ${message}: ${card.userId.fullname}`);
-    
-    res.json({
-      success: true,
-      message,
-      data: attendance,
-    });
+
+    res.json({ success: true, message, data: attendance });
   } catch (err) {
+    // errors thrown by processScan already carry statusCode + a clean message
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ success: false, message: err.message });
+    }
     next(err);
   }
 };
-
-// ============================================================================
-// ENDPOINT: Get RFID Logs (Paginated)
-// ============================================================================
-//
-// Route: GET /api/rfid/logs?page=1&limit=50&startDate=2024-01-01&endDate=2024-01-31
-// Auth: Admin only
-//
-// Query Parameters:
-// - page: Page number (default: 1)
-// - limit: Records per page (default: 50, max: 100)
-// - startDate: Filter start date (ISO format)
-// - endDate: Filter end date (ISO format)
-//
-// Returns: Attendance records with member info
-//
 
 exports.getLogs = async (req, res, next) => {
   try {
