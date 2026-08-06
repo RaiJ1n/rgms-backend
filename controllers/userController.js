@@ -15,30 +15,26 @@ const getProfile = async (req, res, next) => {
   }
 };
 
+// Fire-and-forget Cloudinary cleanup for user profile photos
+const cloudinary = require('../config/cloudinary');
+function deleteCloudinaryImage(publicId) {
+  if (!publicId) return;
+  cloudinary.uploader.destroy(publicId).catch((err) => {
+    console.error('Failed to delete old user photo from Cloudinary:', err.message);
+  });
+}
+
 const updateProfile = async (req, res, next) => {
   try {
-    // NOTE: the validation rules on this route (userRoutes.js) were
-    // previously never checked here, so bad input (e.g. an invalid phone
-    // number) would silently pass express-validator and hit Mongoose raw.
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const { fullname, phone, address, age, heightCm, weightKg, calorieGoal, birthDate, email } = req.body;
-    if (fullname) user.fullname = fullname;
-    if (phone) user.phone = phone;
-    if (address) user.address = address;
-    // Body stats: allow explicit 0 but not undefined, so they can be cleared.
-    if (age !== undefined) user.age = age;
-    if (heightCm !== undefined) user.heightCm = heightCm;
-    if (weightKg !== undefined) user.weightKg = weightKg;
-    if (calorieGoal !== undefined) user.calorieGoal = calorieGoal;
-    if (birthDate) user.birthDate = birthDate;
+    const { fullname, email } = req.body;
+    user.fullname = fullname;
 
-    // Changing email requires a uniqueness check and re-verification —
-    // it's not just another profile field.
     let emailChanged = false;
     if (email && email.toLowerCase() !== user.email) {
       const existing = await User.findOne({ email: email.toLowerCase(), _id: { $ne: user._id } });
@@ -62,8 +58,45 @@ const updateProfile = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: verificationSent ? 'Profile updated. Please verify your new email address.' : 'Profile updated',
-      data: user,
+      message: verificationSent ? 'Profile updated successfully. Please verify your new email address.' : 'Profile updated successfully.',
+      data: {
+        fullname: user.fullname,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const uploadProfilePhoto = async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'Photo file is required' });
+
+    const user = await User.findById(req.user._id).select('-password');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const oldPublicId = user.photo?.public_id;
+    user.photo = { url: req.file.path, public_id: req.file.filename };
+    await user.save();
+
+    deleteCloudinaryImage(oldPublicId);
+
+    res.json({ success: true, message: 'Photo uploaded successfully.', data: { photo: user.photo } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getSocialAccounts = async (req, res, next) => {
+  try {
+    res.json({
+      success: true,
+      data: {
+        gmail: { connected: false },
+        facebook: { connected: false },
+        instagram: { connected: false },
+      },
     });
   } catch (error) {
     next(error);
@@ -93,8 +126,23 @@ const changePassword = async (req, res, next) => {
 
 const getSubscriptions = async (req, res, next) => {
   try {
-    const subscriptions = await require('../models/Subscription').find({ userId: req.user._id }).populate('planId').populate('paymentId');
-    res.json({ success: true, data: subscriptions });
+    const subscriptions = await require('../models/Subscription')
+      .find({ userId: req.user._id })
+      .populate('planId')
+      .populate('paymentId')
+      .lean();
+
+    const response = subscriptions.map((sub) => ({
+      membershipName: sub.planId?.name || null,
+      membershipType: sub.planId?.duration || null,
+      status: sub.status,
+      startDate: sub.startDate,
+      endDate: sub.endDate,
+      expirationDate: sub.endDate,
+      paymentStatus: sub.paymentId?.status || null,
+    }));
+
+    res.json({ success: true, data: response });
   } catch (error) {
     next(error);
   }
@@ -194,4 +242,4 @@ const getDashboardSummary = async (req, res, next) => {
   }
 };
 
-module.exports = { getProfile, updateProfile, changePassword, getSubscriptions, getDashboardSummary };
+module.exports = { getProfile, updateProfile, uploadProfilePhoto, getSocialAccounts, changePassword, getSubscriptions, getDashboardSummary };

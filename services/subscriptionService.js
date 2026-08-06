@@ -3,8 +3,27 @@ const MembershipPlan = require('../models/MembershipPlan');
 const Payment = require('../models/Payment');
 const socketUtil = require('../utils/socket');
 
+const defaultPlans = [
+  { name: 'Daily', duration: 'Daily Pass', price: 120, studentPrice: 100, description: '1 day access to gym' },
+  { name: 'Weekly', duration: 'Weekly Pass', price: 800, studentPrice: 700, description: '7 days access to gym' },
+  { name: 'Monthly', duration: 'Monthly Membership', price: 3000, studentPrice: 2500, description: '30 days access to gym' },
+  { name: 'Yearly', duration: 'Annual Membership', price: 30000, studentPrice: 25000, description: '365 days access to gym' },
+];
+
+const ensureDefaultPlans = async () => {
+  const count = await MembershipPlan.countDocuments();
+  if (count === 0) {
+    await MembershipPlan.insertMany(defaultPlans);
+  }
+};
+
 const getAllPlans = async () => {
-  return MembershipPlan.find();
+  const plans = await MembershipPlan.find();
+  if (plans.length === 0) {
+    await ensureDefaultPlans();
+    return MembershipPlan.find();
+  }
+  return plans;
 };
 
 // Small helper so service-layer errors carry the right HTTP status instead
