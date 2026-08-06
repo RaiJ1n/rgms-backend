@@ -5,29 +5,7 @@ const { protect } = require('../middleware/authMiddleware');
 const { admin } = require('../middleware/adminMiddleware');
 const { requireDeviceKey } = require('../middleware/deviceAuthMiddleware');
 
-// ============================================================================
-// RFID ROUTES - Complete REST API for RFID Management
-// ============================================================================
-//
-// Routes Overview:
-//
-// ADMIN ONLY (protected, admin middleware):
-// POST   /api/rfid/register           Register card to member
-// GET    /api/rfid/logs               Get scan logs (paginated)
-// GET    /api/rfid/today              Get today's attendance
-// GET    /api/rfid/status             Check Arduino connection status
-// GET    /api/rfid/member/:userId     Get member's RFID info
-// PUT    /api/rfid/:cardId/deactivate Disable a card
-// PUT    /api/rfid/:cardId/reassign   Move card to different member
-//
-// DEVICE AUTH (X-Device-Key header):
-// POST   /api/rfid/scan               Process card scan from Arduino
-//
-// ============================================================================
-
-// ============================================================================
-// ADMIN ROUTES (require admin JWT)
-// ============================================================================
+router.post('/scan', requireDeviceKey, rfidController.scanCard);
 
 // All admin routes are protected
 router.use(protect, admin);
@@ -61,17 +39,5 @@ router.put('/:cardId/deactivate', rfidController.deactivateCard);
 // PUT /api/rfid/:cardId/reassign
 // Body: { userId }
 router.put('/:cardId/reassign', rfidController.reassignCard);
-
-// ============================================================================
-// DEVICE ROUTES (require X-Device-Key header)
-// ============================================================================
-
-// Process RFID card scan from Arduino
-// POST /api/rfid/scan
-// Header: X-Device-Key: <RFID_DEVICE_KEY from .env>
-// Body: { cardId }
-router.post('/scan', requireDeviceKey, rfidController.scanCard);
-
-// ============================================================================
 
 module.exports = router;

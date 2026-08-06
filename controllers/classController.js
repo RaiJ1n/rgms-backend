@@ -135,9 +135,18 @@ exports.registerMember = async (req, res, next) => {
     startOfToday.setHours(0, 0, 0, 0);
     if (gymClass.date < startOfToday) return res.status(400).json({ message: 'This class has already taken place' });
     if (gymClass.attendees.includes(memberId)) return res.status(400).json({ message: 'Already registered' });
-    if (gymClass.attendees.length >= gymClass.capacity) return res.status(400).json({ message: 'Class full' });
-    gymClass.attendees.push(memberId);
-    await gymClass.save();
+    const updated = await GymClass.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        status: 'Active',
+        date: { $gte: startOfToday },
+        attendees: { $ne: memberId },
+        $expr: { $lt: [{ $size: '$attendees' }, '$capacity'] },
+      },
+      { $push: { attendees: memberId } },
+      { new: true }
+    );
+if (!updated) return res.status(400).json({ message: 'Unable to register (full, already registered, or closed)' });
     await AuditLog.create({ action: 'class_register', userId: memberId, meta: { classId: gymClass._id } });
     // Just a seat count change — every other client with this class
     // already loaded can patch it in place, no need to refetch the list.

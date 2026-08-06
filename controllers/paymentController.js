@@ -13,9 +13,15 @@ const submitPayment = async (req, res, next) => {
     const { referenceNumber, paymentMethod, planId } = req.body;
     const screenshot = req.file ? req.file.path : undefined;
 
-    // Amount is never taken from the client — it's derived from the plan
-    // and the member's *verified* student status, so someone can't submit
-    // a manipulated price alongside a real reference number.
+    // Reject a reference number that's already been submitted (pending,
+    // approved, or rejected) under the same payment method — prevents a
+    // single real transaction being used to spin up multiple Payment
+    // records, which an admin could accidentally approve more than once.
+    const existing = await Payment.findOne({ referenceNumber, paymentMethod });
+    if (existing) {
+      throw httpError('This reference number has already been submitted', 400);
+    }
+
     let amount = req.body.amount;
     if (planId) {
       const plan = await MembershipPlan.findById(planId);

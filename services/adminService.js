@@ -15,9 +15,12 @@ const createAdmin = async ({ fullname, email, password, phone }) => {
 
 const loginAdmin = async ({ email, password }) => {
   const admin = await User.findOne({ email, role: 'admin' });
+  const httpError = (message, statusCode) => { const e = new Error(message); e.statusCode = statusCode; return e; };
+
   if (!admin || !(await admin.matchPassword(password))) {
-    throw new Error('Invalid email or password');
+    throw httpError('Invalid email or password', 401);
   }
+
   const token = generateToken({ id: admin._id });
   return { admin, token };
 };
