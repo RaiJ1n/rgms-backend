@@ -29,55 +29,36 @@ const updateProfile = async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const {
-      fullname,
-      email,
-      phone,
-      address,
-      age,
-      heightCm,
-      weightKg,
-      calorieGoal,
-      birthDate,
-    } = req.body;
+    const { fullname, email, age, heightCm, weightKg, address } = req.body;
 
-    let verificationSent = false;
-
-    if (fullname !== undefined) user.fullname = fullname;
-    if (phone !== undefined) user.phone = phone;
+    user.fullname = fullname;
     if (address !== undefined) user.address = address;
     if (age !== undefined) user.age = age;
     if (heightCm !== undefined) user.heightCm = heightCm;
     if (weightKg !== undefined) user.weightKg = weightKg;
-    if (calorieGoal !== undefined) user.calorieGoal = calorieGoal;
-    if (birthDate !== undefined) user.birthDate = birthDate;
 
-    // Changing the email address re-triggers verification, same as the
-    // initial registration flow — the new address isn't considered
-    // verified until the user clicks the link.
-    if (email !== undefined && email !== user.email) {
-      const existing = await User.findOne({ email, _id: { $ne: user._id } });
-      if (existing) {
-        return res.status(400).json({ success: false, message: 'Email is already in use' });
-      }
-      user.email = email;
+    let emailChanged = false;
+    if (email && email.toLowerCase() !== user.email) {
+      const existing = await User.findOne({ email: email.toLowerCase(), _id: { $ne: user._id } });
+      if (existing) return res.status(409).json({ success: false, message: 'Email is already in use' });
+      user.email = email.toLowerCase();
       user.isVerified = false;
-      verificationSent = true;
+      emailChanged = true;
     }
 
     await user.save();
 
-    if (verificationSent) {
-      authService
-        .createVerificationToken(user)
-        .then((verificationToken) => {
-          const verifyUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
-          return emailService.sendVerificationEmail(user, verifyUrl);
-        })
-        .catch((err) => console.error('Failed to send verification email:', err.message));
+    let verificationSent = false;
+    if (emailChanged) {
+      const verificationToken = await authService.createVerificationToken(user);
+      const verifyUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+      emailService.sendVerificationEmail(user, verifyUrl).catch((err) =>
+        console.error('Failed to send verification email:', err.message)
+      );
+      verificationSent = true;
     }
 
     const safeUser = user.toObject();
@@ -88,7 +69,7 @@ const updateProfile = async (req, res, next) => {
       message: verificationSent
         ? 'Profile updated successfully. Please verify your new email address.'
         : 'Profile updated successfully.',
-      data: { user: safeUser, verificationSent },
+      data: safeUser,   // full user object, matching frontend's res.data.data usage
     });
   } catch (error) {
     next(error);
@@ -108,7 +89,10 @@ const uploadProfilePhoto = async (req, res, next) => {
 
     deleteCloudinaryImage(oldPublicId);
 
-    res.json({ success: true, message: 'Photo uploaded successfully.', data: { photo: user.photo } });
+    const safeUser = user.toObject();
+    delete safeUser.password;
+
+    res.json({ success: true, message: 'Photo uploaded successfully.', data: safeUser });
   } catch (error) {
     next(error);
   }

@@ -13,6 +13,10 @@ router.put(
   [
     body('fullname').trim().notEmpty().withMessage('Full name is required'),
     body('email').optional().trim().isEmail().withMessage('Enter a valid email').normalizeEmail(),
+    body('age').optional().isInt({ min: 0, max: 120 }).withMessage('Enter a valid age'),
+    body('heightCm').optional().isFloat({ min: 0 }).withMessage('Enter a valid height'),
+    body('weightKg').optional().isFloat({ min: 0 }).withMessage('Enter a valid weight'),
+    body('address').optional().isString().trim(),
   ],
   userController.updateProfile
 );
