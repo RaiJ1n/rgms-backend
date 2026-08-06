@@ -33,6 +33,11 @@ const userSchema = new mongoose.Schema({
   weightKg: { type: Number, min: 0 },
   calorieGoal: { type: Number, min: 0 },
   birthDate: { type: Date },
+  // Profile photo stored in Cloudinary: url and public_id
+  photo: {
+    url: { type: String },
+    public_id: { type: String },
+  },
 
   resetPasswordToken: String,
   resetPasswordExpires: Date,
