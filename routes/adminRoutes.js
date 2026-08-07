@@ -10,6 +10,17 @@ router.use(protect, admin);
 router.get('/users', adminController.getUsers);
 
 router.get('/members', adminController.getMembers);
+router.post(
+  '/members',
+  [
+    body('fullname').notEmpty().withMessage('Full name is required'),
+    body('email').isEmail().withMessage('Valid email is required'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    body('phone').optional().isMobilePhone().withMessage('Enter a valid mobile number'),
+    body('address').optional().isString().trim(),
+  ],
+  adminController.createMember
+);
 router.get('/members/:id', adminController.getMember);
 router.put(
   '/members/:id',
@@ -38,8 +49,19 @@ router.put('/notifications/:id/read', adminController.markNotificationRead);
 router.put('/notifications/mark-all-read', adminController.markAllNotificationsRead);
 
 router.get('/payments', adminController.getPayments);
+router.post(
+  '/payments/manual',
+  [
+    body('userId').isMongoId().withMessage('A member must be selected'),
+    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+    body('paymentMethod').optional().isString().trim(),
+    body('referenceNumber').optional().isString().trim(),
+  ],
+  adminController.createManualPayment
+);
 router.put('/payments/:id/approve', adminController.approvePayment);
 router.put('/payments/:id/reject', adminController.rejectPayment);
+
 router.get('/subscriptions', adminController.getSubscriptions);
 router.post(
   '/plans',
@@ -52,6 +74,15 @@ router.post(
 );
 router.put('/plans/:id', adminController.updatePlan);
 router.delete('/plans/:id', adminController.deletePlan);
+
+router.post(
+  '/attendance/manual',
+  [
+    body('userId').isMongoId().withMessage('A member must be selected'),
+    body('notes').optional().isString().trim(),
+  ],
+  adminController.createManualAttendance
+);
 
 router.get('/student-ids', adminController.getStudentIdSubmissions);
 router.put('/student-ids/:id/approve', adminController.approveStudentId);

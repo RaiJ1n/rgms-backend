@@ -31,7 +31,9 @@ exports.initRFID = async (io) => {
   console.log('[RFID] Initializing RFID service...');
 
   try {
-    const ports = await SerialPort.SerialPort.list();
+    // FIX: `SerialPort` is already the class here (destructured above),
+    // so this is `SerialPort.list()` — not `SerialPort.SerialPort.list()`.
+    const ports = await SerialPort.list();
     const arduinoPort = findArduinoPort(ports);
 
     if (!arduinoPort) {
@@ -80,7 +82,9 @@ function findArduinoPort(ports) {
 
 function connectToArduino(comPort) {
   try {
-    serialPort = new SerialPort.SerialPort({
+    // FIX: same double-nesting mistake as above — `SerialPort` is already
+    // the constructor, so this is `new SerialPort({...})`.
+    serialPort = new SerialPort({
       path: comPort,
       baudRate: 9600,
       autoOpen: false,
@@ -128,13 +132,47 @@ async function handleRFIDData(line) {
 
   console.log(`[RFID] Received UID: ${uid}`);
 
+  // Broadcast every raw tap to admins BEFORE attempting attendance
+  // processing. This is what AdminrfidRegistration.vue listens for to
+  // auto-fill the UID box — it has to fire for unregistered cards too,
+  // so it can't live inside/after processScan (which only succeeds for
+  // cards that are already registered with an active subscription).
+  socketUtil.emitToAdmins('rfid:scanned', { cardId: uid, at: new Date() });
+
   try {
     const { action, user } = await attendanceService.processScan(uid);
     console.log(`[RFID] ✓ ${action.toUpperCase()}: ${user.fullname}`);
+
+    // Tell the Arduino's LCD who just scanned. Format: "name|status",
+    // matched by displayResult() in the sketch, which splits on '|'
+    // and truncates each half to fit the 16-column LCD1602.
+    const status = action === 'checkin' ? 'CHECKED IN' : 'CHECKED OUT';
+    exports.sendToArduino(`${user.fullname}|${status}`);
   } catch (err) {
     // processScan already emits admin rfid:error events for the
     // "card not found" / "no subscription" cases; this just logs.
     console.warn(`[RFID] Scan rejected for ${uid}: ${err.message}`);
+
+    // Still show something on the LCD so whoever's standing at the
+    // reader isn't left staring at "Reading card..." forever.
+    exports.sendToArduino(`Access Denied|${shortReason(err)}`);
+  }
+}
+
+// Maps a processScan() rejection into a short, LCD-friendly reason.
+// err.errorType comes from attendanceService's httpError() helper.
+function shortReason(err) {
+  switch (err.errorType) {
+    case 'card_invalid':
+      return 'Unknown card';
+    case 'no_subscription':
+      return 'No membership';
+    case 'duplicate_scan':
+      return 'Wait a moment';
+    case 'invalid_format':
+      return 'Read error';
+    default:
+      return 'Try again';
   }
 }
 
