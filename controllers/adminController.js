@@ -5,6 +5,7 @@ const Subscription = require('../models/Subscription');
 const MembershipPlan = require('../models/MembershipPlan');
 const StudentVerification = require('../models/StudentVerification');
 const RFIDCard = require('../models/RFIDCard');
+const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
 const socketUtil = require('../utils/socket');
 const subscriptionService = require('../services/subscriptionService');
@@ -200,6 +201,50 @@ const deleteMember = async (req, res, next) => {
   }
 };
 
+// Admin-initiated signup — e.g. a walk-in registering at the front desk
+// without going through the public /signup flow. Skips email verification
+// since the admin is looking at a real person; still checks for a
+// duplicate email the same way updateMember does.
+const createMember = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { fullname, email, password, phone, address } = req.body;
+
+    const existing = await User.findOne({ email: email.toLowerCase() });
+    if (existing) {
+      return res.status(409).json({ success: false, message: 'A member with this email already exists' });
+    }
+
+    const user = await User.create({
+      fullname,
+      email: email.toLowerCase(),
+      password,
+      phone,
+      address,
+      role: 'user',
+      isVerified: true,
+    });
+
+    if (emailService.sendWelcomeEmail) {
+      emailService.sendWelcomeEmail(user).catch((err) =>
+        console.error('Failed to send welcome email:', err.message)
+      );
+    }
+
+    socketUtil.emitToAdmins('stats:refresh');
+    socketUtil.emitToAdmins('member:updated', { _id: user._id });
+
+    const safeUser = user.toObject();
+    delete safeUser.password;
+
+    res.status(201).json({ success: true, message: 'Member created', data: safeUser });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // approveStudentId can turn studentPromoActive on, but there was
 // previously no way to turn it back off — e.g. a member's eligibility
 // lapses, or an ID was approved in error. This is the missing other half
@@ -380,10 +425,76 @@ const rejectPayment = async (req, res, next) => {
   }
 };
 
+// A payment an admin records directly — cash at the front desk, a walk-in,
+// or anything that didn't go through the member's own /payments/submit
+// flow. Goes straight to 'approved' since the admin is the one confirming
+// the money was received; there's no pending review step to skip.
+const createManualPayment = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { userId, amount, paymentMethod, referenceNumber } = req.body;
+
+    const user = await User.findOne({ _id: userId, role: 'user' });
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    const payment = await Payment.create({
+      userId,
+      referenceNumber: referenceNumber || `MANUAL-${Date.now()}`,
+      paymentMethod: paymentMethod || 'Walk-in',
+      amount,
+      status: 'approved',
+    });
+
+    socketUtil.emitToAdmins('stats:refresh');
+    socketUtil.emitToAdmins('payment:updated', payment);
+    socketUtil.emitToUser(payment.userId, 'payment:updated', payment);
+
+    res.status(201).json({ success: true, message: 'Payment recorded', data: payment });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const getSubscriptions = async (req, res, next) => {
   try {
     const subscriptions = await Subscription.find().populate('planId').populate('userId', 'fullname email');
     res.json({ success: true, data: subscriptions });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Manual check-in for a member who can't scan (forgot/lost their card,
+// or the Arduino is offline). Mirrors what a real RFID scan produces —
+// an Attendance row with checkIn set — so it shows up in Today's
+// Attendance and the weekly chart exactly the same way.
+const createManualAttendance = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { userId, notes } = req.body;
+
+    const user = await User.findOne({ _id: userId, role: 'user' });
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    const attendance = await Attendance.create({
+      userId,
+      checkIn: new Date(),
+      notes: notes || 'Manually recorded by admin',
+    });
+    await attendance.populate('userId', 'fullname email phone');
+
+    socketUtil.emitToAdmins('stats:refresh');
+    socketUtil.emitToAdmins('attendance', {
+      type: 'checkin',
+      user: { fullname: user.fullname },
+      data: attendance,
+    });
+
+    res.status(201).json({ success: true, message: 'Attendance recorded', data: attendance });
   } catch (error) {
     next(error);
   }
@@ -484,6 +595,7 @@ module.exports = {
   getUsers,
   getMembers,
   getMember,
+  createMember,
   updateMember,
   setMemberStatus,
   setStudentPromoActive,
@@ -492,6 +604,7 @@ module.exports = {
   markNotificationRead,
   markAllNotificationsRead,
   getPayments,
+  createManualPayment,
   approvePayment,
   rejectPayment,
   getSubscriptions,
@@ -501,4 +614,5 @@ module.exports = {
   getStudentIdSubmissions,
   approveStudentId,
   rejectStudentId,
+  createManualAttendance,
 };
