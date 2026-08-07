@@ -103,6 +103,11 @@ function connectToArduino(comPort) {
       parser = serialPort.pipe(new ReadlineParser({ delimiter: '\n' }));
       parser.on('data', handleRFIDData);
 
+      // FIX: `error` and `close` both fire on a real disconnect, and both
+      // used to call handleDisconnection() independently — causing it to
+      // run twice per disconnect (duplicate reconnect timers, and the
+      // second run tripping over a port the first run already cleaned up).
+      // Routing both through the same guarded function fixes that.
       serialPort.on('error', (err) => {
         console.error('[RFID] Serial port error:', err.message);
         handleDisconnection();
@@ -180,15 +185,34 @@ function shortReason(err) {
 // FUNCTION: Handle Disconnection & Auto-Reconnect
 // ============================================================================
 
+// FIX: guards against handleDisconnection() running twice for the same
+// disconnect event (both 'error' and 'close' fire on a real unplug).
+// Without this, the second call would still see a stale `serialPort`
+// reference in some interleavings and double up reconnect timers.
+let isHandlingDisconnection = false;
+
 function handleDisconnection() {
+  if (isHandlingDisconnection) return;
+  isHandlingDisconnection = true;
+
   console.log('[RFID] Disconnected from Arduino');
 
   if (serialPort) {
-    try {
-      serialPort.close();
-    } catch (err) {
-      // Port already closed
+    // FIX: this was the actual crash. `serialPort.close()` called with no
+    // callback, on a port the OS already closed (physical unplug), doesn't
+    // throw synchronously — it emits a fresh 'error' event instead. Since
+    // we're already inside the 'error' handler, that re-emission has
+    // nowhere to go and Node kills the process with "Unhandled 'error'
+    // event". Checking `isOpen` first, and always passing a callback,
+    // means any close failure is swallowed here instead of re-emitted.
+    if (serialPort.isOpen) {
+      serialPort.close((err) => {
+        if (err) console.warn('[RFID] Error while closing port:', err.message);
+      });
     }
+    // Stop this now-dead instance from triggering handleDisconnection()
+    // again if it emits anything else on a later tick.
+    serialPort.removeAllListeners();
     serialPort = null;
   }
 
@@ -200,6 +224,7 @@ function handleDisconnection() {
     console.log(`[RFID] Retrying in ${delay}ms (attempt ${connectionAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 
     setTimeout(() => {
+      isHandlingDisconnection = false;
       exports.initRFID();
     }, delay);
   } else {
