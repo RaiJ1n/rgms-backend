@@ -3,11 +3,16 @@ const MembershipPlan = require('../models/MembershipPlan');
 const Payment = require('../models/Payment');
 const socketUtil = require('../utils/socket');
 
+// durationValue/durationUnit replace the old string-matched `duration`
+// field ("Daily Pass", "Annual Membership", ...) for date math. Any plan
+// an admin creates from now on — including one-off plans like a
+// "Student Plan" — expires correctly automatically, with no code change
+// needed here, as long as it has these two fields set.
 const defaultPlans = [
-  { name: 'Daily', duration: 'Daily Pass', price: 120, studentPrice: 100, description: '1 day access to gym' },
-  { name: 'Weekly', duration: 'Weekly Pass', price: 800, studentPrice: 700, description: '7 days access to gym' },
-  { name: 'Monthly', duration: 'Monthly Membership', price: 3000, studentPrice: 2500, description: '30 days access to gym' },
-  { name: 'Yearly', duration: 'Annual Membership', price: 30000, studentPrice: 25000, description: '365 days access to gym' },
+  { name: 'Daily', duration: 'Daily Pass', durationValue: 1, durationUnit: 'day', price: 120, studentPrice: 100, description: '1 day access to gym' },
+  { name: 'Weekly', duration: 'Weekly Pass', durationValue: 7, durationUnit: 'day', price: 800, studentPrice: 700, description: '7 days access to gym' },
+  { name: 'Monthly', duration: 'Monthly Membership', durationValue: 1, durationUnit: 'month', price: 3000, studentPrice: 2500, description: '30 days access to gym' },
+  { name: 'Yearly', duration: 'Annual Membership', durationValue: 1, durationUnit: 'year', price: 30000, studentPrice: 25000, description: '365 days access to gym' },
 ];
 
 const ensureDefaultPlans = async () => {
@@ -34,10 +39,42 @@ const httpError = (message, statusCode) => {
   return err;
 };
 
+// Generic replacement for the old switch(plan.duration.toLowerCase()){...}.
+// Works for any plan, present or future, as long as it has durationValue
+// (Number) and durationUnit ('day' | 'week' | 'month' | 'year') set.
+const addDuration = (date, value, unit) => {
+  const result = new Date(date);
+  switch (unit) {
+    case 'day':
+      result.setDate(result.getDate() + value);
+      break;
+    case 'week':
+      result.setDate(result.getDate() + value * 7);
+      break;
+    case 'month':
+      result.setMonth(result.getMonth() + value);
+      break;
+    case 'year':
+      result.setFullYear(result.getFullYear() + value);
+      break;
+    default:
+      // Should be unreachable — durationUnit is schema-enforced — but
+      // fail loudly rather than silently producing a wrong date if the
+      // schema and this list ever drift apart.
+      throw httpError(`Unsupported duration unit: ${unit}`, 400);
+  }
+  return result;
+};
+
 const createSubscription = async ({ userId, planId, paymentId }) => {
   const plan = await MembershipPlan.findById(planId);
   if (!plan) {
     throw httpError('Plan not found', 404);
+  }
+  if (!plan.durationValue || !plan.durationUnit) {
+    // Plan predates the durationValue/durationUnit fields, or was created
+    // without them. Fail clearly instead of guessing at an expiration.
+    throw httpError('This plan is missing a configured duration. Please update it in Admin Settings before it can be purchased.', 400);
   }
 
   const payment = await Payment.findById(paymentId);
@@ -57,24 +94,7 @@ const createSubscription = async ({ userId, planId, paymentId }) => {
   }
 
   const startDate = new Date();
-  let endDate = new Date(startDate);
-
-  switch (plan.duration.toLowerCase()) {
-    case 'daily pass':
-      endDate.setDate(endDate.getDate() + 1);
-      break;
-    case 'weekly pass':
-      endDate.setDate(endDate.getDate() + 7);
-      break;
-    case 'monthly membership':
-      endDate.setMonth(endDate.getMonth() + 1);
-      break;
-    case 'annual membership':
-      endDate.setFullYear(endDate.getFullYear() + 1);
-      break;
-    default:
-      throw httpError('Invalid plan duration', 400);
-  }
+  const endDate = addDuration(startDate, plan.durationValue, plan.durationUnit);
 
   const subscription = await Subscription.create({
     userId,

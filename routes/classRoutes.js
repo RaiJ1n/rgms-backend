@@ -35,7 +35,6 @@ router.post(
     body('startTime').notEmpty().withMessage('Start time is required'),
     body('endTime').notEmpty().withMessage('End time is required'),
     body('capacity').optional().isInt({ min: 1 }).withMessage('Capacity must be at least 1'),
-    body('fee').optional().isFloat({ min: 0 }).withMessage('Fee cannot be negative'),
     body('status').optional().isIn(STATUS_VALUES).withMessage('Invalid status'),
   ],
   classCtrl.createClass
@@ -49,7 +48,6 @@ router.put(
     body('name').optional().notEmpty().withMessage('Class name cannot be empty'),
     body('date').optional().isISO8601().withMessage('Enter a valid date'),
     body('capacity').optional().isInt({ min: 1 }).withMessage('Capacity must be at least 1'),
-    body('fee').optional().isFloat({ min: 0 }).withMessage('Fee cannot be negative'),
     body('status').optional().isIn(STATUS_VALUES).withMessage('Invalid status'),
   ],
   classCtrl.updateClass

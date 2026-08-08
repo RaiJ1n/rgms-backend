@@ -19,7 +19,7 @@ function deleteCloudinaryImage(publicId) {
 // createClass/updateClass can't drift apart, and so findByIdAndUpdate
 // only ever touches fields we actually meant to expose (not attendees,
 // not image — image is handled separately below from req.file).
-const ALLOWED_FIELDS = ['name', 'description', 'instructor', 'date', 'startTime', 'endTime', 'status', 'capacity', 'fee'];
+const ALLOWED_FIELDS = ['name', 'description', 'instructor', 'date', 'startTime', 'endTime', 'status', 'capacity'];
 
 function pickPayload(body) {
   const payload = {};

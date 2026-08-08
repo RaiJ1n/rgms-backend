@@ -11,6 +11,7 @@ const adminAuthRoutes = require('./routes/adminAuthRoutes');
 const rfidRoutes = require('./routes/rfidRoutes');
 const classRoutes = require('./routes/classRoutes');
 const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
+const studentIdRoutes = require('./routes/studentIdRoutes'); // NEW
 
 const app = express();
 
@@ -28,8 +29,9 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/rfid', rfidRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
+app.use('/api/student-id', studentIdRoutes); // NEW — was completely unmounted
 
 
 app.use(errorMiddleware);
 
-module.exports = app; 
+module.exports = app;
