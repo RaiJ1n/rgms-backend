@@ -78,7 +78,9 @@ router.delete('/plans/:id', adminController.deletePlan);
 router.post(
   '/attendance/manual',
   [
-    body('userId').isMongoId().withMessage('A member must be selected'),
+    body('userId').optional().isMongoId().withMessage('Invalid member selected'),
+    body('guestName').optional().isString().trim().notEmpty().withMessage('Enter a name'),
+    body('memberType').optional().isIn(['Regular', 'Student']).withMessage('Type must be Regular or Student'),
     body('notes').optional().isString().trim(),
   ],
   adminController.createManualAttendance

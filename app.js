@@ -12,6 +12,7 @@ const rfidRoutes = require('./routes/rfidRoutes');
 const classRoutes = require('./routes/classRoutes');
 const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
 const studentIdRoutes = require('./routes/studentIdRoutes'); // NEW
+const settingsRoutes = require('./routes/settingsRoutes'); // NEW — Social Accounts (#8)
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.use('/api/rfid', rfidRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
 app.use('/api/student-id', studentIdRoutes); // NEW — was completely unmounted
+app.use('/api/settings', settingsRoutes); // NEW — Social Accounts (#8): GET is public, PUT is admin-only
 
 
 app.use(errorMiddleware);
