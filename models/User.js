@@ -46,6 +46,22 @@ const userSchema = new mongoose.Schema({
   isVerified: { type: Boolean, default: false },
   verificationToken: String,
   verificationTokenExpires: Date,
+
+  // Password-change OTP (Admin Settings "Send Code"/"Resend" flow).
+  // Same hashing convention as resetPasswordToken/verificationToken above:
+  // only the sha256 hash is ever stored, the raw 6-digit code is emailed
+  // and never persisted. Kept separate from resetPasswordToken/Expires —
+  // those are for the "forgot password" flow (unauthenticated, link-based)
+  // and shouldn't be conflated with this authenticated, OTP-based one.
+  passwordChangeOtp: String,
+  passwordChangeOtpExpires: Date,
+  // Server-side cooldown anchor for "Send Code"/"Resend" — enforced in
+  // adminService.js regardless of whether the frontend's own button
+  // state/timer is bypassed.
+  passwordChangeOtpLastSentAt: Date,
+
+  // Read by AdminSettings.vue's "Last password change" activity summary.
+  lastPasswordChange: Date,
 }, { timestamps: true });
 
 userSchema.pre('save', async function (next) {

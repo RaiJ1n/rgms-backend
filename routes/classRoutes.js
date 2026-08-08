@@ -16,6 +16,14 @@ router.get('/', classCtrl.getClasses);
 // Registered before '/:id' so 'admin' is never mistaken for an id.
 router.get('/admin/all', protect, admin, classCtrl.getAllClassesAdmin);
 
+// Registered members for the admin "View" modal. Declared before the
+// generic '/:id' below for the same reason '/admin/all' is — Express
+// matches by full path shape here ('/:id/members' has an extra segment,
+// so it can't collide with '/:id' either way), but keeping the more
+// specific routes grouped together above the generic one stays
+// consistent with the existing convention in this file.
+router.get('/:id/members', protect, admin, classCtrl.getClassMembers);
+
 router.get('/:id', classCtrl.getClass);
 
 // Creating/editing/removing classes is admin-only. 'image' is optional —

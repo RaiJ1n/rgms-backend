@@ -9,9 +9,14 @@ const subscriptionSchema = new mongoose.Schema({
     ref: 'MembershipPlan', 
     required: true },
 
+  // unique: true closes the race that a plain findOne-then-create check
+  // can't — if createSubscription is ever invoked twice for the same
+  // payment (double-click, retry, etc.), the second insert fails at the
+  // database level instead of silently creating a second extension.
   paymentId: { type: mongoose.Schema.Types.ObjectId, 
     ref: 'Payment', 
-    required: true },
+    required: true,
+    unique: true },
 
   startDate: { type: Date, 
     required: true },

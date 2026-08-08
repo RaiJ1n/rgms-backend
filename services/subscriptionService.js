@@ -66,6 +66,25 @@ const addDuration = (date, value, unit) => {
   return result;
 };
 
+// The user's currently-effective expiration, independent of how many
+// Subscription rows they've accumulated across past purchases and
+// independent of each row's stored `status` (nothing in this codebase
+// flips status from 'active' to 'expired' as time passes, so status
+// alone can't be trusted to answer "is this still active right now").
+//
+// We just take the latest endDate the user has ever been granted:
+//   - if it's still in the future, that's the base to extend from
+//   - if it's in the past (or there's no subscription at all), the new
+//     membership starts fresh from now
+const getExpiryBaseDate = async (userId) => {
+  const latest = await Subscription.findOne({ userId }).sort({ endDate: -1 });
+  const now = new Date();
+  if (latest && latest.endDate > now) {
+    return latest.endDate;
+  }
+  return now;
+};
+
 const createSubscription = async ({ userId, planId, paymentId }) => {
   const plan = await MembershipPlan.findById(planId);
   if (!plan) {
@@ -93,17 +112,34 @@ const createSubscription = async ({ userId, planId, paymentId }) => {
     throw httpError('A subscription already exists for this payment', 400);
   }
 
+  // Extend from the user's current effective expiration instead of
+  // always starting from now — this is the actual fix. If they have no
+  // subscription yet, or their latest one has already lapsed,
+  // getExpiryBaseDate() falls back to `now` on its own (requirement 5).
+  const baseDate = await getExpiryBaseDate(userId);
   const startDate = new Date();
-  const endDate = addDuration(startDate, plan.durationValue, plan.durationUnit);
+  const endDate = addDuration(baseDate, plan.durationValue, plan.durationUnit);
 
-  const subscription = await Subscription.create({
-    userId,
-    planId,
-    paymentId,
-    startDate,
-    endDate,
-    status: 'active',
-  });
+  let subscription;
+  try {
+    subscription = await Subscription.create({
+      userId,
+      planId,
+      paymentId,
+      startDate,
+      endDate,
+      status: 'active',
+    });
+  } catch (err) {
+    // Belt-and-suspenders for the findOne check above: if two requests
+    // for the same payment race each other, the unique index on
+    // paymentId (see models/Subscription.js) rejects the loser here
+    // instead of silently granting a second extension.
+    if (err.code === 11000) {
+      throw httpError('A subscription already exists for this payment', 400);
+    }
+    throw err;
+  }
 
   // Single choke point for every subscription creation (member
   // self-checkout and admin payment-approval both land here), so this is
@@ -115,7 +151,11 @@ const createSubscription = async ({ userId, planId, paymentId }) => {
 };
 
 const getMySubscription = async (userId) => {
-  return Subscription.findOne({ userId }).populate('planId');
+  // The currently-controlling subscription is whichever row has the
+  // furthest-out endDate — same reasoning as getExpiryBaseDate above.
+  // Previously this was an unsorted findOne, which could return an old,
+  // already-superseded row once a user had purchased more than once.
+  return Subscription.findOne({ userId }).sort({ endDate: -1 }).populate('planId');
 };
 
 module.exports = { getAllPlans, createSubscription, getMySubscription };

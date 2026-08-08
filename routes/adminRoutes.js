@@ -1,8 +1,15 @@
 const express = require('express');
 const { body } = require('express-validator');
 const adminController = require('../controllers/adminController');
+const userController = require('../controllers/userController');
 const { protect } = require('../middleware/authMiddleware');
 const { admin } = require('../middleware/adminMiddleware');
+// ASSUMPTION: uploadMiddleware exports a configured multer instance (the
+// same one used elsewhere in the app for Cloudinary uploads), so it can be
+// called as upload.single(fieldName). If your uploadMiddleware.js exports
+// something else (e.g. a pre-built .single('photo') middleware, or a named
+// export), adjust the require/usage below to match.
+const upload = require('../middleware/uploadMiddleware');
 
 const router = express.Router();
 
@@ -93,5 +100,39 @@ router.put(
   [body('reason').optional().isString().trim()],
   adminController.rejectStudentId
 );
+
+// ---- Admin Settings: password-change OTP ----
+// These were implemented in adminController.js/adminService.js but never
+// mounted here, which is why "Send Code" was 404ing — AdminSettings.vue's
+// api.post('/admin/security/send-otp') and api.put('/admin/security/change-password')
+// had nothing to match against.
+router.post('/security/send-otp', adminController.sendPasswordChangeOtp);
+router.put(
+  '/security/change-password',
+  [
+    body('currentPassword').notEmpty().withMessage('Current password is required'),
+    body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
+    body('otp').notEmpty().withMessage('Verification code is required'),
+  ],
+  adminController.changePassword
+);
+
+// ---- Admin Settings: profile (name/email + photo) ----
+// AdminSettings.vue's saveProfile()/onPhotoChange() call these two
+// endpoints and had the same 404 problem — no route existed for either.
+// Reuses userController's getProfile/updateProfile/uploadProfilePhoto
+// rather than duplicating them: they only ever touch req.user, and
+// req.user here is the admin (protect + admin above), so no member data
+// is at risk of being read or overwritten.
+router.get('/profile', userController.getProfile);
+router.put(
+  '/profile',
+  [
+    body('fullname').notEmpty().withMessage('Full name is required'),
+    body('email').optional().isEmail().withMessage('Enter a valid email').normalizeEmail(),
+  ],
+  userController.updateProfile
+);
+router.put('/profile/photo', upload.single('photo'), userController.uploadProfilePhoto);
 
 module.exports = router;
