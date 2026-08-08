@@ -36,6 +36,14 @@ const sendStudentVerificationEmail = async (user, approved, reason) => {
   });
 };
 
+// Password-change OTP (Admin Settings). The code itself is the only
+// sensitive value here — no link, nothing else to click — so the email
+// stays short and states the expiry plainly.
+const sendPasswordChangeOtpEmail = async (user, otp) => {
+  const html = `<p>Hi ${user.fullname},</p><p>Your verification code to change your password is:</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${otp}</p><p>This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>`;
+  await sendMail({ to: user.email, subject: 'Your Password Change Verification Code', html });
+};
+
 module.exports = {
   sendWelcomeEmail,
   sendVerificationEmail,
@@ -43,4 +51,5 @@ module.exports = {
   sendSubscriptionConfirmation,
   sendPaymentStatusEmail,
   sendStudentVerificationEmail,
+  sendPasswordChangeOtpEmail,
 };

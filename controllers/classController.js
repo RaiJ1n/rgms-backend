@@ -3,6 +3,8 @@ const GymClass = require('../models/GymClass');
 const AuditLog = require('../models/AuditLog');
 const cloudinary = require('../config/cloudinary');
 const socketUtil = require('../utils/socket');
+const escapeRegex = require('../utils/escapeRegex');
+const { parsePagination } = require('../utils/paginate');
 
 // Fire-and-forget Cloudinary cleanup — used when a class image is
 // replaced or the class itself is deleted, so old uploads don't pile up
@@ -13,6 +15,36 @@ function deleteCloudinaryImage(publicId) {
   cloudinary.uploader.destroy(publicId).catch((err) => {
     console.error('Failed to delete old class image from Cloudinary:', err.message);
   });
+}
+
+// ---- Auto Active -> Completed ----
+// date is a Date (Y-M-D, time component unused), startTime/endTime are
+// 'HH:mm' <input type="time"> strings. Combined the same way the rest of
+// this controller already treats dates — server-local time via setHours
+// (see registerMember's startOfToday.setHours(0,0,0,0)) — so this stays
+// consistent with the app's existing (implicit, no-timezone-library)
+// date handling rather than introducing a new convention.
+function getClassEndDateTime(gymClass) {
+  const end = new Date(gymClass.date);
+  const [hours, minutes] = (gymClass.endTime || '00:00').split(':').map(Number);
+  end.setHours(hours || 0, minutes || 0, 0, 0);
+  return end;
+}
+
+// Cancelled classes are left alone — only a class currently marked
+// Active can silently expire into Completed. Runs before every list/read
+// so status is correct in the database itself (not just computed for
+// display), matching what's shown after a refresh and what any other
+// endpoint (registration, admin edit) sees.
+async function syncCompletedClasses() {
+  const now = new Date();
+  const activeClasses = await GymClass.find({ status: 'Active' }).select('date endTime');
+  const idsToComplete = activeClasses
+    .filter((c) => getClassEndDateTime(c) < now)
+    .map((c) => c._id);
+  if (idsToComplete.length) {
+    await GymClass.updateMany({ _id: { $in: idsToComplete } }, { $set: { status: 'Completed' } });
+  }
 }
 
 // Fields an admin can set from the create/edit form. Kept in one list so
@@ -58,6 +90,7 @@ exports.createClass = async (req, res, next) => {
 // this list automatically — no separate cleanup job needed.
 exports.getClasses = async (req, res, next) => {
   try {
+    await syncCompletedClasses();
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     const classes = await GymClass.find({ status: 'Active', date: { $gte: startOfToday } })
@@ -68,18 +101,84 @@ exports.getClasses = async (req, res, next) => {
 
 // Admin-facing list (AdminClasses.vue) — everything, regardless of
 // status or date, so the admin can see past/cancelled classes too.
+// AdminClasses.vue sends page/limit/search and reads back
+// data/total/totalPages — matching the same shape as
+// adminController.getMembers/getPayments — but this endpoint previously
+// ignored all of that and always returned the full unfiltered list.
 exports.getAllClassesAdmin = async (req, res, next) => {
   try {
-    const classes = await GymClass.find().sort({ date: -1, startTime: 1 });
-    res.json({ data: classes });
+    await syncCompletedClasses();
+
+    const { page, limit, skip, isExport } = parsePagination(req.query);
+    const { search } = req.query;
+
+    const filter = {};
+    if (search) {
+      const re = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [{ name: re }, { instructor: re }];
+    }
+
+    const total = await GymClass.countDocuments(filter);
+    const classes = await GymClass.find(filter)
+      .sort({ date: -1, startTime: 1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      data: classes,
+      page,
+      limit,
+      total,
+      totalPages: isExport ? 1 : Math.ceil(total / limit),
+    });
   } catch (err) { next(err); }
 };
 
 exports.getClass = async (req, res, next) => {
   try {
+    await syncCompletedClasses();
     const gymClass = await GymClass.findById(req.params.id);
     if (!gymClass) return res.status(404).json({ message: 'Not found' });
     res.json({ data: gymClass });
+  } catch (err) { next(err); }
+};
+
+// ---- View: registered members for a class (AdminClasses.vue "View") ----
+// Class registration in this app is tracked entirely by GymClass.attendees
+// (see registerMember below) — Payment.js has no classId and
+// registerMember never creates a Payment record, so there is no existing
+// class<->Payment link to reuse. attendees IS the registration system, so
+// this reads from it directly rather than inventing a second one. See the
+// note in my reply about what that means for the Payment/Date columns
+// the spec asked for.
+exports.getClassMembers = async (req, res, next) => {
+  try {
+    await syncCompletedClasses();
+    const gymClass = await GymClass.findById(req.params.id)
+      .populate('attendees', 'fullname email phone');
+    if (!gymClass) return res.status(404).json({ message: 'Class not found' });
+
+    const members = gymClass.attendees.map((u) => ({
+      _id: u._id,
+      name: u.fullname,
+      email: u.email,
+      phone: u.phone,
+    }));
+
+    res.json({
+      data: {
+        class: {
+          _id: gymClass._id,
+          name: gymClass.name,
+          date: gymClass.date,
+          startTime: gymClass.startTime,
+          endTime: gymClass.endTime,
+          status: gymClass.status,
+          capacity: gymClass.capacity,
+        },
+        members,
+      },
+    });
   } catch (err) { next(err); }
 };
 
@@ -134,6 +233,13 @@ exports.registerMember = async (req, res, next) => {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     if (gymClass.date < startOfToday) return res.status(400).json({ message: 'This class has already taken place' });
+    // Covers the same-day case: date is still >= today but the class's
+    // own end time already passed (e.g. registering at 6:15 PM for a
+    // class that ended at 6:00 PM) — status may not have flipped to
+    // Completed yet if syncCompletedClasses hasn't run since then.
+    if (getClassEndDateTime(gymClass) <= new Date()) {
+      return res.status(400).json({ message: 'This class has already taken place' });
+    }
     if (gymClass.attendees.includes(memberId)) return res.status(400).json({ message: 'Already registered' });
     const updated = await GymClass.findOneAndUpdate(
       {

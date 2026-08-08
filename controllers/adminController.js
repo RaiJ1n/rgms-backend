@@ -9,6 +9,7 @@ const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
 const socketUtil = require('../utils/socket');
 const subscriptionService = require('../services/subscriptionService');
+const adminService = require('../services/adminService');
 const emailService = require('../services/emailService');
 const escapeRegex = require('../utils/escapeRegex');
 const { parsePagination } = require('../utils/paginate');
@@ -617,6 +618,38 @@ const rejectStudentId = async (req, res, next) => {
   }
 };
 
+// ---- Admin Settings: password-change OTP ----
+// req.user._id is the admin's own id here — protect+admin (applied to
+// this whole router in adminRoutes.js) guarantees that.
+
+const sendPasswordChangeOtp = async (req, res, next) => {
+  try {
+    const result = await adminService.requestPasswordChangeOtp(req.user._id);
+    res.json({ success: true, message: `Verification code sent to ${result.sentTo}`, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const changePassword = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { currentPassword, newPassword, otp } = req.body;
+    await adminService.verifyAndChangePassword({
+      adminId: req.user._id,
+      currentPassword,
+      newPassword,
+      otp,
+    });
+
+    res.json({ success: true, message: 'Password updated successfully' });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getUsers,
   getMembers,
@@ -641,4 +674,6 @@ module.exports = {
   approveStudentId,
   rejectStudentId,
   createManualAttendance,
+  sendPasswordChangeOtp,
+  changePassword,
 };
