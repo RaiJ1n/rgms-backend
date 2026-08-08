@@ -83,6 +83,9 @@ async function processScan(cardId) {
       userId: card.userId._id,
       rfidCardId: card._id,
       checkIn: now,
+      // No admin present at a card scan to pick Regular/Student manually,
+      // so fall back to the account's existing promo flag.
+      memberType: card.userId.studentPromoActive ? 'Student' : 'Regular',
     });
   }
 

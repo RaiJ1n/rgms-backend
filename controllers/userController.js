@@ -32,13 +32,18 @@ const updateProfile = async (req, res, next) => {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const { fullname, email, age, heightCm, weightKg, address } = req.body;
+    const { fullname, email, age, heightCm, weightKg, address, phone, birthDate } = req.body;
 
     user.fullname = fullname;
     if (address !== undefined) user.address = address;
     if (age !== undefined) user.age = age;
     if (heightCm !== undefined) user.heightCm = heightCm;
     if (weightKg !== undefined) user.weightKg = weightKg;
+    if (phone !== undefined) user.phone = phone;
+    // birthDate arrives as a 'YYYY-MM-DD' string from the frontend's
+    // <input type="date">; Mongoose casts it to the schema's Date type
+    // automatically, same as any other Date-typed field assignment here.
+    if (birthDate !== undefined) user.birthDate = birthDate || null;
 
     let emailChanged = false;
     if (email && email.toLowerCase() !== user.email) {

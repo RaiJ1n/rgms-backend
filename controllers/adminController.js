@@ -475,13 +475,29 @@ const createManualAttendance = async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const { userId, notes } = req.body;
+    const { userId, guestName, memberType, notes } = req.body;
 
-    const user = await User.findOne({ _id: userId, role: 'user' });
-    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+    // Exactly one of userId / guestName: an existing member picked by
+    // search, or a free-text name for someone with no account. The route
+    // validation allows either to be absent individually, so this is the
+    // one place enforcing that precisely one of them is actually set.
+    if (!userId && !guestName) {
+      return res.status(400).json({ success: false, message: 'Select a member or enter a name' });
+    }
+    if (userId && guestName) {
+      return res.status(400).json({ success: false, message: 'Provide either a member or a guest name, not both' });
+    }
+
+    let user = null;
+    if (userId) {
+      user = await User.findOne({ _id: userId, role: 'user' });
+      if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+    }
 
     const attendance = await Attendance.create({
-      userId,
+      userId: userId || undefined,
+      guestName: userId ? undefined : guestName.trim(),
+      memberType: memberType === 'Student' ? 'Student' : 'Regular',
       checkIn: new Date(),
       notes: notes || 'Manually recorded by admin',
     });
@@ -490,7 +506,7 @@ const createManualAttendance = async (req, res, next) => {
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('attendance', {
       type: 'checkin',
-      user: { fullname: user.fullname },
+      user: { fullname: user ? user.fullname : attendance.guestName },
       data: attendance,
     });
 
@@ -557,7 +573,17 @@ const approveStudentId = async (req, res, next) => {
     await submission.save();
 
     const user = await User.findByIdAndUpdate(submission.userId, { studentPromoActive: true }, { new: true });
-    if (user) await emailService.sendStudentVerificationEmail(user, true);
+    if (user) {
+      await emailService.sendStudentVerificationEmail(user, true);
+      // Push the fresh studentPromoActive flag to the member's own live
+      // session so their client updates immediately instead of only
+      // picking it up on next login. Strip the password before it goes
+      // out over the socket — findByIdAndUpdate above didn't .select it
+      // off, so `user` still carries the hash.
+      const safeUser = user.toObject();
+      delete safeUser.password;
+      socketUtil.emitToUser(submission.userId, 'user:profile-updated', safeUser);
+    }
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('member:updated', { _id: submission.userId });
 
