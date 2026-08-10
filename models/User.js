@@ -26,6 +26,13 @@ const userSchema = new mongoose.Schema({
   address: { type: String,
     trim: true },
 
+  // Member-provided social links (Admin Profile > Social Accounts).
+  // Simple URL strings the member pastes in themselves — not OAuth.
+  // Empty string means "not connected", same convention used to derive
+  // socialAccounts.connected on the frontend.
+  facebookUrl: { type: String, trim: true, default: '' },
+  instagramUrl: { type: String, trim: true, default: '' },
+
   // Body stats — self-reported, shown on the member Dashboard/Profile.
   // All optional: a brand-new user won't have these set yet.
   age: { type: Number, min: 0, max: 120 },
