@@ -32,7 +32,7 @@ const updateProfile = async (req, res, next) => {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const { fullname, email, age, heightCm, weightKg, address, phone, birthDate } = req.body;
+    const { fullname, email, age, heightCm, weightKg, address, phone, birthDate, facebookUrl, instagramUrl } = req.body;
 
     user.fullname = fullname;
     if (address !== undefined) user.address = address;
@@ -40,6 +40,10 @@ const updateProfile = async (req, res, next) => {
     if (heightCm !== undefined) user.heightCm = heightCm;
     if (weightKg !== undefined) user.weightKg = weightKg;
     if (phone !== undefined) user.phone = phone;
+    // Empty string clears the link (used by the "Disconnect" action on the
+    // frontend); a non-empty value is already URL-validated by the route.
+    if (facebookUrl !== undefined) user.facebookUrl = facebookUrl.trim();
+    if (instagramUrl !== undefined) user.instagramUrl = instagramUrl.trim();
     // birthDate arrives as a 'YYYY-MM-DD' string from the frontend's
     // <input type="date">; Mongoose casts it to the schema's Date type
     // automatically, same as any other Date-typed field assignment here.
@@ -108,9 +112,9 @@ const getSocialAccounts = async (req, res, next) => {
     res.json({
       success: true,
       data: {
-        gmail: { connected: false },
-        facebook: { connected: false },
-        instagram: { connected: false },
+        gmail: { connected: true, detail: req.user.email },
+        facebook: { connected: !!req.user.facebookUrl, detail: req.user.facebookUrl || null },
+        instagram: { connected: !!req.user.instagramUrl, detail: req.user.instagramUrl || null },
       },
     });
   } catch (error) {

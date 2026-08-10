@@ -17,6 +17,18 @@ router.put(
     body('heightCm').optional().isFloat({ min: 0 }).withMessage('Enter a valid height'),
     body('weightKg').optional().isFloat({ min: 0 }).withMessage('Enter a valid weight'),
     body('address').optional().isString().trim(),
+    // checkFalsy: true lets an empty string through validation-free — that's
+    // how "Disconnect" clears the link. Anything non-empty must be a real URL.
+    body('facebookUrl')
+      .optional({ checkFalsy: true })
+      .trim()
+      .isURL()
+      .withMessage('Enter a valid Facebook URL'),
+    body('instagramUrl')
+      .optional({ checkFalsy: true })
+      .trim()
+      .isURL()
+      .withMessage('Enter a valid Instagram URL'),
   ],
   userController.updateProfile
 );
