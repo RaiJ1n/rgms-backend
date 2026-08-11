@@ -16,9 +16,7 @@ const RfidConfig = require('../models/RfidConfig');
 //    startup, or explicitly chosen by an admin via POST /api/rfid/connect).
 // 3. Parse incoming RFID UIDs.
 // 4. Delegate check-in/check-out decisions to attendanceService (shared
-//    with the REST /api/rfid/scan fallback, so there's one source of truth)
-//    — UNLESS an admin Bind/Register operation is currently active, in
-//    which case the scan is reported but not treated as attendance.
+//    with the REST /api/rfid/scan fallback, so there's one source of truth).
 // 5. Handle disconnections & auto-reconnect.
 // 6. Persist the chosen port (by USB metadata, not just its COM string) so
 //    a restart can re-find the same physical device even if Windows
@@ -32,100 +30,15 @@ let connectionAttempts = 0;
 let currentBaudRate = 9600;
 let lastError = null;
 let lastConnectedDevice = null; // { vendorId, productId, serialNumber, friendlyName }
+// When true, an admin is actively binding/registering a card via the
+// Settings or Registration UI. Scans during this window skip the normal
+// check-in/out attempt entirely (see handleRFIDData) — otherwise every
+// scan of an as-yet-unbound card would fail attendanceService.processScan
+// and show "Access Denied" on the Arduino's LCD, which reads like a
+// rejected member rather than "this is an expected part of registering."
+let registrationMode = false;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY_MS = 3000;
-
-// ============================================================================
-// RFID OPERATION STATE (Bind / Register vs. normal Attendance)
-// ============================================================================
-//
-// This is intentionally a single structured record, not a bare boolean —
-// there is exactly one physical RFID reader, so only one Bind/Register
-// operation can ever be meaningfully "in progress" at a time. The record
-// carries who started it and when it expires, so it's inspectable and
-// self-limiting instead of a magic global switch that could get stuck on.
-//
-// activeOperation = { type: 'bind' | 'register', adminId, startedAt,
-//                      expiresAt, timeoutHandle }
-//
-let activeOperation = null;
-const OPERATION_TIMEOUT_MS = 30000; // auto-expire after 30s of no scan
-
-// Starts a Bind/Register operation. Returns { success, operation } on
-// success, or { success: false, message, status } if another admin
-// already has one active (only one physical reader — no silent override).
-exports.startOperation = (type, adminId) => {
-  if (activeOperation && String(activeOperation.adminId) !== String(adminId)) {
-    return {
-      success: false,
-      status: 409,
-      message: `Another admin already has an active ${activeOperation.type} operation. Try again shortly.`,
-    };
-  }
-
-  // Same admin restarting (e.g. re-opening the modal) — clear the old
-  // timer before setting a fresh one, rather than stacking timeouts.
-  if (activeOperation && activeOperation.timeoutHandle) {
-    clearTimeout(activeOperation.timeoutHandle);
-  }
-
-  const startedAt = new Date();
-  const expiresAt = new Date(startedAt.getTime() + OPERATION_TIMEOUT_MS);
-
-  const timeoutHandle = setTimeout(() => {
-    console.log(`[RFID] ${type} operation for admin ${adminId} expired — resuming normal attendance scanning`);
-    activeOperation = null;
-    exports.sendToArduino('MODE:ATTENDANCE');
-  }, OPERATION_TIMEOUT_MS);
-
-  activeOperation = { type, adminId, startedAt, expiresAt, timeoutHandle };
-
-  console.log(`[RFID] ${type} operation started by admin ${adminId} (expires ${expiresAt.toISOString()})`);
-
-  // Persistent LCD mode — stays showing "REGISTER MODE"/"BIND MODE"
-  // until the operation ends (cancel, timeout, or another mode
-  // command), independent of the 4s auto-revert used for scan results.
-  exports.sendToArduino(`MODE:${type.toUpperCase()}`);
-
-  return {
-    success: true,
-    operation: { type, adminId, startedAt, expiresAt },
-  };
-};
-
-// Cancels the active operation. Ownership-checked: only the admin who
-// started it (or nobody, if it already expired) can clear it, so a
-// stray/late request from a different session can't cancel someone
-// else's in-progress bind.
-exports.cancelOperation = (adminId) => {
-  if (!activeOperation) {
-    return { success: true, message: 'No active RFID operation.' };
-  }
-
-  if (String(activeOperation.adminId) !== String(adminId)) {
-    return {
-      success: false,
-      status: 403,
-      message: 'You do not own the active RFID operation.',
-    };
-  }
-
-  clearTimeout(activeOperation.timeoutHandle);
-  const { type } = activeOperation;
-  activeOperation = null;
-
-  console.log(`[RFID] ${type} operation cancelled by admin ${adminId} — resuming normal attendance scanning`);
-  exports.sendToArduino('MODE:ATTENDANCE');
-
-  return { success: true, message: 'RFID operation cancelled.' };
-};
-
-// Read-only status check (e.g. for a settings/debug panel).
-exports.getOperationStatus = () => {
-  if (!activeOperation) return { active: false };
-  const { type, adminId, startedAt, expiresAt } = activeOperation;
-  return { active: true, type, adminId, startedAt, expiresAt };
-};
 
 // ============================================================================
 // Known USB vendor/product IDs for Arduino boards and the common
@@ -351,13 +264,6 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
       parser = serialPort.pipe(new ReadlineParser({ delimiter: '\n' }));
       parser.on('data', handleRFIDData);
 
-      // Sync the LCD's persistent mode on every fresh connection. The
-      // backend's activeOperation is in-memory only and won't survive a
-      // server restart — if the Arduino wasn't power-cycled at the same
-      // time, it could still be showing a stale REGISTER/BIND mode from
-      // before the restart. A fresh connection always assumes attendance.
-      exports.sendToArduino('MODE:ATTENDANCE');
-
       // FIX (kept from the original): both 'error' and 'close' fire on a
       // real disconnect — routing both through the same guarded function
       // avoids double reconnect timers.
@@ -407,10 +313,7 @@ function closeCurrentPort() {
 // FUNCTION: Handle RFID Data from Arduino
 // ============================================================================
 // Delegates the actual check-in/check-out decision to attendanceService,
-// the same function the REST /api/rfid/scan fallback uses — UNLESS an
-// admin Bind/Register operation is currently active, in which case the
-// scan is broadcast (so the frontend modal can pick it up) but not
-// treated as an attendance event.
+// the same function the REST /api/rfid/scan fallback uses.
 
 async function handleRFIDData(line) {
   const uid = line.trim().toUpperCase();
@@ -423,16 +326,16 @@ async function handleRFIDData(line) {
   // listen for this to auto-fill/display the UID — it has to fire for
   // unregistered cards too, so it can't live inside/after processScan
   // (which only succeeds for cards already registered with an active
-  // subscription). This line is unchanged by the Bind/Register work below.
+  // subscription).
   socketUtil.emitToAdmins('rfid:scanned', { cardId: uid, at: new Date() });
 
-  // If an admin is actively binding/registering a card, this scan is
-  // for THEM to see on screen — not an attendance event. Skip
-  // attendanceService entirely so an intentionally-unregistered card
-  // never produces "Access Denied" on the physical LCD.
-  if (activeOperation) {
-    console.log(`[RFID] Scan captured for active ${activeOperation.type} operation (admin ${activeOperation.adminId}) — skipping attendance processing`);
-    exports.sendToArduino(`Card Detected|Use Admin App`);
+  if (registrationMode) {
+    // An admin is actively binding/registering this exact card right now
+    // — the UID above already reached them. Deliberately skip the
+    // check-in/out attempt: we don't want to accidentally check someone
+    // in mid-registration, and the LCD should read as "this is expected",
+    // not "Access Denied".
+    exports.sendToArduino('Registering card...|Check admin screen');
     return;
   }
 
@@ -527,10 +430,6 @@ function handleDisconnection() {
 // ============================================================================
 
 exports.closeRFID = () => {
-  if (activeOperation && activeOperation.timeoutHandle) {
-    clearTimeout(activeOperation.timeoutHandle);
-    activeOperation = null;
-  }
   if (serialPort && serialPort.isOpen) {
     console.log('[RFID] Closing serial connection...');
     serialPort.close();
@@ -563,6 +462,18 @@ exports.sendToArduino = (message) => {
 };
 
 // ============================================================================
+// EXPORT: Toggle Registration Mode
+// ============================================================================
+// Set to true while the Bind RFID Card modal (EditMember.vue) or the
+// Register New Card page (AdminrfidRegistration.vue) is open. See the
+// `registrationMode` comment above for why this changes scan handling.
+
+exports.setRegistrationMode = (enabled) => {
+  registrationMode = !!enabled;
+  console.log(`[RFID] Registration mode ${registrationMode ? 'ON' : 'OFF'}`);
+};
+
+// ============================================================================
 // EXPORT: Get Connection Status
 // ============================================================================
 
@@ -574,5 +485,6 @@ exports.getStatus = () => {
     connectionAttempts,
     lastError,
     device: lastConnectedDevice,
+    registrationMode,
   };
 };

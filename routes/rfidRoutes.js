@@ -36,6 +36,11 @@ router.get('/ports', rfidController.listPorts);
 // Body: { port, baudRate? }
 router.post('/connect', rfidController.connectPort);
 
+// Toggle registration mode (Bind/Register UI open/close)
+// POST /api/rfid/registration-mode
+// Body: { enabled }
+router.post('/registration-mode', rfidController.setRegistrationMode);
+
 // Get RFID card info for a specific member
 // GET /api/rfid/member/:userId
 router.get('/member/:userId', rfidController.getMemberRFID);
