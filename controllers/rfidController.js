@@ -62,9 +62,12 @@ exports.registerCard = async (req, res, next) => {
     // Check if card already registered
     const existing = await RFIDCard.findOne({ cardId: cardId.toUpperCase() });
     if (existing) {
+      const sameMember = existing.userId && existing.userId.toString() === userId;
       return res.status(400).json({
         success: false,
-        message: 'This card is already registered',
+        message: sameMember
+          ? 'This RFID card is already assigned to this member.'
+          : 'This RFID card is already assigned to another member.',
       });
     }
     
@@ -231,6 +234,65 @@ exports.getStatus = async (req, res, next) => {
       data: status,
     });
   } catch (err) {
+    next(err);
+  }
+};
+
+// ============================================================================
+// ENDPOINT: List Available Serial Ports
+// ============================================================================
+//
+// Route: GET /api/rfid/ports
+// Auth: Admin only
+//
+// Returns every serial port Windows currently reports, with USB metadata
+// and an isArduino flag (matched against known Arduino/USB-serial chipset
+// VID/PIDs — see rfidService.js). Powers the Port Selector dropdown in
+// AdminSettings.vue; the frontend re-calls this on "Refresh" and on page
+// load, exactly like Arduino IDE's Tools → Port re-scanning.
+//
+
+exports.listPorts = async (req, res, next) => {
+  try {
+    const ports = await rfidService.listPorts();
+    res.json({ success: true, data: ports });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ============================================================================
+// ENDPOINT: Connect to a Specific Serial Port
+// ============================================================================
+//
+// Route: POST /api/rfid/connect
+// Auth: Admin only
+// Request Body: { port, baudRate? }
+//
+// Opens a real serial connection to the requested port (closing whatever
+// was previously open first) and persists the choice — by USB metadata,
+// not just the COM string — so a server restart can re-find the same
+// physical device even if Windows later assigns it a different COM number.
+//
+// Error Codes:
+// - 400: missing/invalid port or baud rate
+// - 404: requested port no longer exists (e.g. unplugged)
+// - 409: port could not be opened (already in use by another program, etc.)
+//
+
+exports.connectPort = async (req, res, next) => {
+  try {
+    const { port, baudRate } = req.body;
+    if (!port) {
+      return res.status(400).json({ success: false, message: 'port is required' });
+    }
+
+    const status = await rfidService.connectToPort(port, baudRate);
+    res.json({ success: true, message: `Connected to ${port}`, data: status });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ success: false, message: err.message });
+    }
     next(err);
   }
 };
