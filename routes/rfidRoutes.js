@@ -27,6 +27,15 @@ router.get('/today', rfidController.todayAttendance);
 // GET /api/rfid/status
 router.get('/status', rfidController.getStatus);
 
+// List available serial ports with USB metadata (Port Selector dropdown)
+// GET /api/rfid/ports
+router.get('/ports', rfidController.listPorts);
+
+// Connect to a specific serial port
+// POST /api/rfid/connect
+// Body: { port, baudRate? }
+router.post('/connect', rfidController.connectPort);
+
 // Get RFID card info for a specific member
 // GET /api/rfid/member/:userId
 router.get('/member/:userId', rfidController.getMemberRFID);
