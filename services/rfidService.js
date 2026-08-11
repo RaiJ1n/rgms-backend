@@ -392,13 +392,44 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
 
 function closeCurrentPort() {
   return new Promise((resolve) => {
-    if (serialPort && serialPort.isOpen) {
-      serialPort.removeAllListeners();
-      serialPort.close(() => resolve());
-    } else {
-      if (serialPort) serialPort.removeAllListeners();
-      serialPort = null;
+    if (!serialPort) {
       resolve();
+      return;
+    }
+
+    const stale = serialPort;
+    // Detach this from module state immediately so sendToArduino() and any
+    // in-flight callback can no longer treat `stale` as the live port —
+    // this is what "never write to a closing/replaced instance" means in
+    // practice, not just a comment.
+    serialPort = null;
+
+    // IMPORTANT: do NOT removeAllListeners() before close(). On Windows,
+    // closing a port with a pending I/O operation (e.g. a write still in
+    // flight) can surface as an async 'error' event — "GetOverlappedResult:
+    // Operation aborted" — rather than as the close() callback's error
+    // argument. If nothing is listening for 'error' at that moment, Node
+    // treats it as fatal and crashes the whole process. Swap in a no-op
+    // safety-net handler first, so that event always has somewhere to go.
+    stale.removeAllListeners('close');
+    stale.removeAllListeners('data');
+    stale.removeAllListeners('error');
+    stale.on('error', (err) => {
+      console.warn('[RFID] Ignored error on stale port during close:', err.message);
+    });
+
+    const finish = () => {
+      stale.removeAllListeners();
+      resolve();
+    };
+
+    if (stale.isOpen) {
+      stale.close((err) => {
+        if (err) console.warn('[RFID] Error while closing port:', err.message);
+        finish();
+      });
+    } else {
+      finish();
     }
   });
 }
@@ -488,19 +519,34 @@ function handleDisconnection() {
   console.log('[RFID] Disconnected from Arduino');
 
   if (serialPort) {
-    // `serialPort.close()` called with no callback, on a port the OS
-    // already closed (physical unplug), doesn't throw synchronously — it
-    // emits a fresh 'error' event instead. Since we're potentially already
-    // inside an 'error' handler, that re-emission has nowhere to go and
-    // Node kills the process with "Unhandled 'error' event". Checking
-    // `isOpen` first, and always passing a callback, avoids that.
-    if (serialPort.isOpen) {
-      serialPort.close((err) => {
+    const stale = serialPort;
+    serialPort = null; // detach from module state before touching listeners
+
+    // `serialPort.close()` on a port the OS already closed (physical
+    // unplug) — or one with a write still in flight — doesn't always
+    // surface the failure via the close() callback. It can instead emit a
+    // fresh async 'error' event ("GetOverlappedResult: Operation aborted").
+    // We're potentially already inside an 'error' handler right now, so
+    // that event needs somewhere to go: swap in a no-op safety-net
+    // listener BEFORE closing, rather than stripping listeners first (the
+    // old order — close() then immediately removeAllListeners() — left a
+    // window where that re-emission had zero listeners and crashed the
+    // process).
+    stale.removeAllListeners('close');
+    stale.removeAllListeners('data');
+    stale.removeAllListeners('error');
+    stale.on('error', (err) => {
+      console.warn('[RFID] Ignored error on stale port during disconnect cleanup:', err.message);
+    });
+
+    if (stale.isOpen) {
+      stale.close((err) => {
         if (err) console.warn('[RFID] Error while closing port:', err.message);
+        stale.removeAllListeners();
       });
+    } else {
+      stale.removeAllListeners();
     }
-    serialPort.removeAllListeners();
-    serialPort = null;
   }
 
   parser = null;
