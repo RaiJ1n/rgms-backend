@@ -298,6 +298,30 @@ exports.connectPort = async (req, res, next) => {
 };
 
 // ============================================================================
+// ENDPOINT: Toggle Registration Mode
+// ============================================================================
+//
+// Route: POST /api/rfid/registration-mode
+// Auth: Admin only
+// Request Body: { enabled: boolean }
+//
+// Called when the Bind RFID Card modal (EditMember.vue) or the Register
+// New Card page (AdminrfidRegistration.vue) opens/closes. While enabled,
+// scans skip the normal check-in/out attempt so an unregistered card
+// being bound doesn't show "Access Denied" on the Arduino's LCD.
+//
+
+exports.setRegistrationMode = async (req, res, next) => {
+  try {
+    const { enabled } = req.body;
+    rfidService.setRegistrationMode(!!enabled);
+    res.json({ success: true, data: { registrationMode: !!enabled } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ============================================================================
 // ENDPOINT: Get Member's RFID Card Info
 // ============================================================================
 //
