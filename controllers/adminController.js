@@ -124,6 +124,8 @@ const getMember = async (req, res, next) => {
         studentPromoActive: user.studentPromoActive,
         rfidCardId: rfidCard ? rfidCard.cardId : null,
         studentVerification: studentVerification || null,
+        facebookUrl: user.facebookUrl || '',
+        instagramUrl: user.instagramUrl || '',
       },
     });
   } catch (error) {
@@ -453,11 +455,40 @@ const createManualPayment = async (req, res, next) => {
     });
     await payment.populate('planId', 'name duration');
 
+    // Manual payments skip the pending-review step, but membership should
+    // still activate/extend exactly the way it does when an admin approves
+    // a member-submitted payment (see approvePayment below) — otherwise a
+    // walk-in payment gets recorded in Payment History but never actually
+    // grants the member any days. createSubscription itself decides
+    // extend-vs-fresh-start based on the member's current subscription
+    // (see getExpiryBaseDate in subscriptionService.js) — nothing about
+    // that decision needs to be duplicated here.
+    let subscription = null;
+    let subscriptionError = null;
+    try {
+      subscription = await subscriptionService.createSubscription({
+        userId: payment.userId,
+        planId: payment.planId,
+        paymentId: payment._id,
+      });
+    } catch (subErr) {
+      subscriptionError = subErr.message;
+    }
+
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('payment:updated', payment);
     socketUtil.emitToUser(payment.userId, 'payment:updated', payment);
+    // Membership status/plan on the member list & detail page is derived
+    // from the subscription this may have just created/extended.
+    socketUtil.emitToAdmins('member:updated', { _id: payment.userId });
 
-    res.status(201).json({ success: true, message: 'Payment recorded', data: payment });
+    res.status(201).json({
+      success: true,
+      message: subscription ? 'Payment recorded and membership updated' : 'Payment recorded',
+      data: payment,
+      subscription,
+      subscriptionError,
+    });
   } catch (error) {
     next(error);
   }
