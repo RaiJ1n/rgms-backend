@@ -335,7 +335,7 @@ async function handleRFIDData(line) {
     // check-in/out attempt: we don't want to accidentally check someone
     // in mid-registration, and the LCD should read as "this is expected",
     // not "Access Denied".
-    exports.sendToArduino('Registering card...|Check admin screen');
+    exports.sendToArduino(`Card registered|${uid}`);
     return;
   }
 

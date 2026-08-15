@@ -6,7 +6,7 @@ let io = null;
 //     (e.g. "your payment was approved") without broadcasting to everyone.
 //   - `admins` — every connected admin also joins this shared room, used
 //     for things every admin session should see (notification bell,
-//     live attendance feed, dashboard refresh pings).
+//     live attendance feed, dashboard refresh pings, RFID scan events).
 exports.init = (server) => {
   try {
     const { Server } = require('socket.io');
@@ -24,24 +24,44 @@ exports.init = (server) => {
     io.use(async (socket, next) => {
       try {
         const token = socket.handshake.auth && socket.handshake.auth.token;
-        if (!token) return next(new Error('Not authorized'));
+        if (!token) {
+          console.warn('[SOCKET] Rejected connection: no token in handshake.auth');
+          return next(new Error('Not authorized'));
+        }
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const user = await User.findById(decoded.id).select('-password');
-        if (!user) return next(new Error('Not authorized'));
+        if (!user) {
+          console.warn(`[SOCKET] Rejected connection: token decoded to id ${decoded.id}, but no matching User found`);
+          return next(new Error('Not authorized'));
+        }
 
         socket.user = user;
         next();
       } catch (err) {
+        // This is what was silently swallowing bad/expired tokens before —
+        // now it actually tells you why a connection was rejected.
+        console.warn('[SOCKET] Rejected connection:', err.message);
         next(new Error('Not authorized'));
       }
     });
 
     io.on('connection', (socket) => {
       socket.join(`user:${socket.user._id}`);
-      if (socket.user.role === 'admin') {
+      const isAdmin = socket.user.role === 'admin';
+      if (isAdmin) {
         socket.join('admins');
       }
+      // This line is the key diagnostic: it tells you definitively whether
+      // a given connection actually landed in the `admins` room (and
+      // therefore will receive rfid:scanned/rfid:status/etc.) or not.
+      console.log(
+        `[SOCKET] Connected: ${socket.user.fullname} (${socket.user._id}), role=${socket.user.role}, joined admins room=${isAdmin}`
+      );
+
+      socket.on('disconnect', (reason) => {
+        console.log(`[SOCKET] Disconnected: ${socket.user.fullname} (${socket.user._id}) — ${reason}`);
+      });
     });
     return io;
   } catch (err) {
