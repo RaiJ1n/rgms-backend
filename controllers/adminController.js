@@ -435,18 +435,23 @@ const createManualPayment = async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const { userId, amount, paymentMethod, referenceNumber } = req.body;
+    const { userId, amount, planId, paymentMethod, referenceNumber } = req.body;
 
     const user = await User.findOne({ _id: userId, role: 'user' });
     if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
 
+    const plan = await MembershipPlan.findById(planId);
+    if (!plan) return res.status(404).json({ success: false, message: 'Membership plan not found' });
+
     const payment = await Payment.create({
       userId,
+      planId,
       referenceNumber: referenceNumber || `MANUAL-${Date.now()}`,
       paymentMethod: paymentMethod || 'Walk-in',
       amount,
       status: 'approved',
     });
+    await payment.populate('planId', 'name duration');
 
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('payment:updated', payment);

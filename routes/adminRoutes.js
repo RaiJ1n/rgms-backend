@@ -4,11 +4,6 @@ const adminController = require('../controllers/adminController');
 const userController = require('../controllers/userController');
 const { protect } = require('../middleware/authMiddleware');
 const { admin } = require('../middleware/adminMiddleware');
-// ASSUMPTION: uploadMiddleware exports a configured multer instance (the
-// same one used elsewhere in the app for Cloudinary uploads), so it can be
-// called as upload.single(fieldName). If your uploadMiddleware.js exports
-// something else (e.g. a pre-built .single('photo') middleware, or a named
-// export), adjust the require/usage below to match.
 const upload = require('../middleware/uploadMiddleware');
 
 const router = express.Router();
@@ -61,6 +56,7 @@ router.post(
   [
     body('userId').isMongoId().withMessage('A member must be selected'),
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+    body('planId').isMongoId().withMessage('A membership plan must be selected'),
     body('paymentMethod').optional().isString().trim(),
     body('referenceNumber').optional().isString().trim(),
   ],
@@ -101,11 +97,6 @@ router.put(
   adminController.rejectStudentId
 );
 
-// ---- Admin Settings: password-change OTP ----
-// These were implemented in adminController.js/adminService.js but never
-// mounted here, which is why "Send Code" was 404ing — AdminSettings.vue's
-// api.post('/admin/security/send-otp') and api.put('/admin/security/change-password')
-// had nothing to match against.
 router.post('/security/send-otp', adminController.sendPasswordChangeOtp);
 router.put(
   '/security/change-password',
@@ -117,13 +108,6 @@ router.put(
   adminController.changePassword
 );
 
-// ---- Admin Settings: profile (name/email + photo) ----
-// AdminSettings.vue's saveProfile()/onPhotoChange() call these two
-// endpoints and had the same 404 problem — no route existed for either.
-// Reuses userController's getProfile/updateProfile/uploadProfilePhoto
-// rather than duplicating them: they only ever touch req.user, and
-// req.user here is the admin (protect + admin above), so no member data
-// is at risk of being read or overwritten.
 router.get('/profile', userController.getProfile);
 router.put(
   '/profile',
