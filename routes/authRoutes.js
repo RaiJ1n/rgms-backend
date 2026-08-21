@@ -25,10 +25,26 @@ router.post(
 );
 
 router.post('/logout', authController.logout);
-router.post('/forgot-password', authController.forgotPassword);
 router.post(
-  '/reset-password/:token',
-  [body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters')],
+  '/forgot-password',
+  [body('email').isEmail().withMessage('Valid email is required')],
+  authController.forgotPassword
+);
+router.post(
+  '/verify-reset-code',
+  [
+    body('email').isEmail().withMessage('Valid email is required'),
+    body('otp').isLength({ min: 6, max: 6 }).withMessage('Code must be 6 digits').isNumeric().withMessage('Code must be numeric'),
+  ],
+  authController.verifyResetCode
+);
+router.post(
+  '/reset-password',
+  [
+    body('email').isEmail().withMessage('Valid email is required'),
+    body('otp').isLength({ min: 6, max: 6 }).withMessage('Code must be 6 digits').isNumeric().withMessage('Code must be numeric'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+  ],
   authController.resetPassword
 );
 

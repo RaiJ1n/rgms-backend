@@ -2,7 +2,7 @@ const User = require('../models/User');
 const Notification = require('../models/Notification');
 const socketUtil = require('../utils/socket');
 const generateToken = require('../utils/generateToken');
-const { generateResetToken, hashToken } = require('../utils/generateResetToken');
+const { generateOtp, hashOtp } = require('../utils/generateOtp');
 const { generateVerificationToken, hashVerificationToken } = require('../utils/generateVerificationToken');
 
 const registerUser = async ({ fullname, email, password, phone, address }) => {
@@ -48,24 +48,38 @@ const loginUser = async ({ email, password }) => {
   return { user, token };
 };
 
-const createResetToken = async (user) => {
-  const { resetToken, hashedToken } = generateResetToken();
-  user.resetPasswordToken = hashedToken;
-  user.resetPasswordExpires = Date.now() + 60 * 60 * 1000;
+const createForgotPasswordOtp = async (user) => {
+  const { otp, hashedOtp } = generateOtp();
+  user.forgotPasswordOtp = hashedOtp;
+  // Shorter-lived than the old link (was 60 min) — a 6-digit code is
+  // guessable in a way a 32-byte token isn't, so it shouldn't stay valid
+  // as long. Matches the existing passwordChangeOtp convention.
+  user.forgotPasswordOtpExpires = Date.now() + 10 * 60 * 1000;
   await user.save();
-  return resetToken;
+  return otp;
 };
 
-const resetPassword = async ({ token, password }) => {
-  const hashedToken = hashToken(token);
+// Checks the code without consuming it, so the "Enter code" screen can
+// confirm validity before the user has typed a new password. resetPassword
+// below re-runs this same check (and only it clears the code on success),
+// so a code that's merely been *verified* but never used to actually
+// reset anything is still rejected once it expires.
+const verifyForgotPasswordOtp = async ({ email, otp }) => {
+  const hashedOtp = hashOtp(otp);
   const user = await User.findOne({
-    resetPasswordToken: hashedToken,
-    resetPasswordExpires: { $gt: Date.now() },
+    email,
+    forgotPasswordOtp: hashedOtp,
+    forgotPasswordOtpExpires: { $gt: Date.now() },
   });
-  if (!user) throw new Error('Invalid or expired reset token');
+  if (!user) throw new Error('Invalid or expired code');
+  return user;
+};
+
+const resetPassword = async ({ email, otp, password }) => {
+  const user = await verifyForgotPasswordOtp({ email, otp });
   user.password = password;
-  user.resetPasswordToken = undefined;
-  user.resetPasswordExpires = undefined;
+  user.forgotPasswordOtp = undefined;
+  user.forgotPasswordOtpExpires = undefined;
   await user.save();
   return user;
 };
@@ -107,7 +121,8 @@ const resendVerification = async (email) => {
 module.exports = {
   registerUser,
   loginUser,
-  createResetToken,
+  createForgotPasswordOtp,
+  verifyForgotPasswordOtp,
   resetPassword,
   createVerificationToken,
   verifyEmail,
