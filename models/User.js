@@ -68,8 +68,16 @@ const userSchema = new mongoose.Schema({
   medicalConsentGiven: { type: Boolean, default: false },
   medicalConsentDate: { type: Date },
 
-  resetPasswordToken: String,
-  resetPasswordExpires: Date,
+  // Forgot-password OTP (unauthenticated flow, started from the Login
+  // page's "Forgot Password" link). Same hash-then-store convention as
+  // passwordChangeOtp below — only the sha256 hash is ever persisted,
+  // the raw 6-digit code is emailed once and never written to the
+  // database. Kept separate from passwordChangeOtp/passwordChangeOtpExpires
+  // since that field belongs to the authenticated Admin Settings "Send
+  // Code" flow and shouldn't be conflated with this one (same reasoning
+  // as the comment on that field below).
+  forgotPasswordOtp: String,
+  forgotPasswordOtpExpires: Date,
 
   // Email verification
   isVerified: { type: Boolean, default: false },

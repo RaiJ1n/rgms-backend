@@ -57,18 +57,35 @@ const forgotPassword = async (req, res, next) => {
     const user = await User.findOne({ email });
 
     if (user) {
-      const resetToken = await authService.createResetToken(user);
-      const resetUrl = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
-      emailService.sendForgotPasswordEmail(user, resetUrl).catch((err) =>
-        console.error('Failed to send forgot-password email:', err.message)
+      const otp = await authService.createForgotPasswordOtp(user);
+      emailService.sendForgotPasswordOtpEmail(user, otp).catch((err) =>
+        console.error('Failed to send forgot-password OTP email:', err.message)
       );
     }
 
     res.json({
       success: true,
-      message: 'If that email is registered, a password reset link has been sent.',
+      message: 'If that email is registered, a verification code has been sent.',
     });
   } catch (error) {
+    next(error);
+  }
+};
+
+const verifyResetCode = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { email, otp } = req.body;
+    await authService.verifyForgotPasswordOtp({ email, otp });
+    res.json({ success: true, message: 'Code verified' });
+  } catch (error) {
+    // Wrong/expired code is the user's mistake, not a server fault —
+    // 400 rather than falling through to the generic error handler.
+    if (error.message === 'Invalid or expired code') {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     next(error);
   }
 };
@@ -78,12 +95,14 @@ const resetPassword = async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const { token } = req.params;
-    const { password } = req.body;
-    const user = await authService.resetPassword({ token, password });
+    const { email, otp, password } = req.body;
+    const user = await authService.resetPassword({ email, otp, password });
     const authToken = generateToken({ id: user._id });
     res.json({ success: true, message: 'Password reset successful', data: { token: authToken } });
   } catch (error) {
+    if (error.message === 'Invalid or expired code') {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     next(error);
   }
 };
@@ -112,4 +131,4 @@ const resendVerification = async (req, res, next) => {
   }
 };
 
-module.exports = { register, login, logout, forgotPassword, resetPassword, verifyEmail, resendVerification };
+module.exports = { register, login, logout, forgotPassword, verifyResetCode, resetPassword, verifyEmail, resendVerification };

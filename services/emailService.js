@@ -10,9 +10,9 @@ const sendVerificationEmail = async (user, verifyUrl) => {
   await sendMail({ to: user.email, subject: 'Verify Your Email', html });
 };
 
-const sendForgotPasswordEmail = async (user, resetUrl) => {
-  const html = `<p>Hi ${user.fullname},</p><p>Click the link below to reset your password:</p><p><a href="${resetUrl}">${resetUrl}</a></p>`;
-  await sendMail({ to: user.email, subject: 'Password Reset Request', html });
+const sendForgotPasswordOtpEmail = async (user, otp) => {
+  const html = `<p>Hi ${user.fullname},</p><p>Your password reset code is:</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${otp}</p><p>This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>`;
+  await sendMail({ to: user.email, subject: 'Your Password Reset Code', html });
 };
 
 const sendSubscriptionConfirmation = async (user, plan) => {
@@ -47,7 +47,7 @@ const sendPasswordChangeOtpEmail = async (user, otp) => {
 module.exports = {
   sendWelcomeEmail,
   sendVerificationEmail,
-  sendForgotPasswordEmail,
+  sendForgotPasswordOtpEmail,
   sendSubscriptionConfirmation,
   sendPaymentStatusEmail,
   sendStudentVerificationEmail,
