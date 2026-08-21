@@ -13,6 +13,7 @@ const adminService = require('../services/adminService');
 const emailService = require('../services/emailService');
 const escapeRegex = require('../utils/escapeRegex');
 const { parsePagination } = require('../utils/paginate');
+const generateReceiptNumber = require('../utils/generateReceiptNumber');
 
 const getUsers = async (req, res) => {
   try {
@@ -126,6 +127,18 @@ const getMember = async (req, res, next) => {
         studentVerification: studentVerification || null,
         facebookUrl: user.facebookUrl || '',
         instagramUrl: user.instagramUrl || '',
+        // Medical fields — deliberately only here (single-member detail,
+        // already admin-only via adminRoutes.js's protect+admin), never
+        // in getMembers' list response above. An admin/authorized staff
+        // member opening one member's record is the "authorized
+        // personnel, for program customization" case Section H allows;
+        // seeing it embedded in a scrollable list of everyone would not be.
+        medicalConditions: user.medicalConditions || '',
+        medicalAllergies: user.medicalAllergies || '',
+        emergencyContactName: user.emergencyContactName || '',
+        emergencyContactPhone: user.emergencyContactPhone || '',
+        medicalNotes: user.medicalNotes || '',
+        medicalConsentGiven: user.medicalConsentGiven || false,
       },
     });
   } catch (error) {
@@ -141,10 +154,29 @@ const updateMember = async (req, res, next) => {
     const user = await User.findOne({ _id: req.params.id, role: 'user' });
     if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
 
-    const { fullname, phone, address, email } = req.body;
+    const { fullname, phone, address, email,
+      medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes } = req.body;
     if (fullname) user.fullname = fullname;
     if (phone) user.phone = phone;
     if (address) user.address = address;
+
+    // Medical fields: an admin/authorized staff member can update these
+    // once the member has already given consent (via their own profile —
+    // see userController.updateProfile), but consent itself is never
+    // something an admin can grant on the member's behalf. If no consent
+    // is on file yet, medical fields in this request are silently
+    // ignored rather than erroring the whole save — an admin editing
+    // someone's phone number shouldn't be blocked by an unrelated
+    // missing consent checkbox.
+    const medicalFieldsTouched = [medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes]
+      .some((v) => v !== undefined);
+    if (medicalFieldsTouched && user.medicalConsentGiven) {
+      if (medicalConditions !== undefined) user.medicalConditions = medicalConditions;
+      if (medicalAllergies !== undefined) user.medicalAllergies = medicalAllergies;
+      if (emergencyContactName !== undefined) user.emergencyContactName = emergencyContactName;
+      if (emergencyContactPhone !== undefined) user.emergencyContactPhone = emergencyContactPhone;
+      if (medicalNotes !== undefined) user.medicalNotes = medicalNotes;
+    }
 
     if (email && email.toLowerCase() !== user.email) {
       const existing = await User.findOne({ email: email.toLowerCase(), _id: { $ne: user._id } });
@@ -327,6 +359,7 @@ const getPayments = async (req, res, next) => {
       const matchingUsers = await User.find({ fullname: re }).select('_id');
       filter.$or = [
         { referenceNumber: re },
+        { transactionNumber: re },
         { userId: { $in: matchingUsers.map((u) => u._id) } },
       ];
     }
@@ -448,7 +481,14 @@ const createManualPayment = async (req, res, next) => {
     const payment = await Payment.create({
       userId,
       planId,
-      referenceNumber: referenceNumber || `MANUAL-${Date.now()}`,
+      // Was: referenceNumber || `MANUAL-${Date.now()}` — stuffing a
+      // placeholder into the field meant for a real external GCash
+      // reference. Now left genuinely empty for Walk-in/cash (undefined,
+      // not a fake string) unless the admin actually typed one; the
+      // real system-generated identifier is transactionNumber below,
+      // generated for every payment regardless of method.
+      referenceNumber: referenceNumber || undefined,
+      transactionNumber: generateReceiptNumber(),
       paymentMethod: paymentMethod || 'Walk-in',
       amount,
       status: 'approved',

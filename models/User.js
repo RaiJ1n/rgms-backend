@@ -46,6 +46,28 @@ const userSchema = new mongoose.Schema({
     public_id: { type: String },
   },
 
+  // --- Medical history (Section H) ---
+  // Deliberately kept to what's needed for class/fitness-program
+  // customization, not a general health record — conditions, allergies,
+  // and an emergency contact are the fields an instructor would actually
+  // need to safely tailor a class or workout. Never returned by
+  // getMembers (the admin list view) — only by getMember (single-member
+  // detail, admin-only) and the member's own profile. See
+  // userController.updateProfile and adminController.getMember/
+  // updateMember for the access-control side of this.
+  medicalConditions: { type: String, trim: true },
+  medicalAllergies: { type: String, trim: true },
+  emergencyContactName: { type: String, trim: true },
+  emergencyContactPhone: { type: String, trim: true },
+  medicalNotes: { type: String, trim: true },
+
+  // Required before any of the fields above are ever saved for the
+  // first time — see userController.updateProfile's enforcement. Once
+  // given, this stays true; medicalConsentDate records when consent was
+  // first given, not re-stamped on every later edit.
+  medicalConsentGiven: { type: Boolean, default: false },
+  medicalConsentDate: { type: Date },
+
   resetPasswordToken: String,
   resetPasswordExpires: Date,
 

@@ -31,6 +31,13 @@ router.put(
     body('phone').optional().isMobilePhone().withMessage('Enter a valid mobile number'),
     body('address').optional().isString().trim(),
     body('email').optional().isEmail().withMessage('Enter a valid email').normalizeEmail(),
+    // Same length caps as userRoutes.js's member-facing validators —
+    // this is the admin-side path to the same fields.
+    body('medicalConditions').optional({ checkFalsy: true }).isString().trim().isLength({ max: 1000 }),
+    body('medicalAllergies').optional({ checkFalsy: true }).isString().trim().isLength({ max: 500 }),
+    body('emergencyContactName').optional({ checkFalsy: true }).isString().trim().isLength({ max: 200 }),
+    body('emergencyContactPhone').optional({ checkFalsy: true }).isString().trim().isLength({ max: 50 }),
+    body('medicalNotes').optional({ checkFalsy: true }).isString().trim().isLength({ max: 1000 }),
   ],
   adminController.updateMember
 );

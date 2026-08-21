@@ -67,9 +67,32 @@ exports.summary = async (req, res, next) => {
     // subscription counts as "new"; any subsequent one is a "renewal".
     const { newMemberships, renewals } = await getNewVsRenewalCounts(match);
 
-    // Active vs expired
-    const activeCount = await Subscription.countDocuments({ status: 'active' });
-    const expiredCount = await Subscription.countDocuments({ status: 'expired' });
+    // Active vs expired — was Subscription.countDocuments({status:'active'})
+    // / {status:'expired'}. subscriptionService.js's own comment explains
+    // why that's wrong: nothing in this codebase ever flips a
+    // subscription's status from 'active' to 'expired' as time passes, so
+    // the stored status field can't answer "is this active right now" on
+    // its own — it only reflects what was true at creation time. A
+    // subscription created months ago with status:'active' and an endDate
+    // long past would still count here under the old query. This mirrors
+    // adminController.js's deriveStatus(), which already gets this right
+    // for the member list/detail views — this is the same fix applied to
+    // the dashboard's numbers.
+    //
+    // "Active member" also means one *member*, not one *subscription* row
+    // — a member with two subscription rows (e.g. renewed while the old
+    // one hadn't technically lapsed) should count once, not twice.
+    const now = new Date();
+    const activeUserIds = await Subscription.distinct('userId', { status: 'active', endDate: { $gte: now } });
+    const activeUserIdSet = new Set(activeUserIds.map((id) => id.toString()));
+    const activeCount = activeUserIds.length;
+
+    // Distinct users whose only 'active'-status subscription(s) have all
+    // lapsed — excludes anyone already counted in activeCount (e.g. a
+    // member with an old expired row plus a newer, still-valid renewal
+    // should only ever count as active, never as both).
+    const everActiveUserIds = await Subscription.distinct('userId', { status: 'active', endDate: { $lt: now } });
+    const expiredCount = everActiveUserIds.filter((id) => !activeUserIdSet.has(id.toString())).length;
 
     // Daily RFID attendance (today)
     const todayStart = new Date(); todayStart.setHours(0,0,0,0);
@@ -138,6 +161,41 @@ exports.salesByRange = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// Income by membership package/plan — Section G requirement: separate
+// income totals per package type, not just an overall figure.
+exports.incomeByPackage = async (req, res, next) => {
+  try {
+    const match = parseRange(req.query);
+
+    const results = await Payment.aggregate([
+      { $match: { ...match, status: 'approved' } },
+      { $group: { _id: '$planId', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+      { $sort: { total: -1 } },
+      { $lookup: { from: 'membershipplans', localField: '_id', foreignField: '_id', as: 'plan' } },
+      { $unwind: { path: '$plan', preserveNullAndEmptyArrays: true } },
+      { $project: { planName: { $ifNull: ['$plan.name', 'No plan specified'] }, total: 1, count: 1 } },
+    ]);
+
+    res.json({ data: results });
+  } catch (err) { next(err); }
+};
+
+// Income by payment method (Walk-in/GCash/etc.) — the other Section G
+// breakdown that had no endpoint at all before this.
+exports.incomeByMethod = async (req, res, next) => {
+  try {
+    const match = parseRange(req.query);
+
+    const results = await Payment.aggregate([
+      { $match: { ...match, status: 'approved' } },
+      { $group: { _id: '$paymentMethod', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+      { $sort: { total: -1 } },
+    ]);
+
+    res.json({ data: results.map((r) => ({ method: r._id || 'Unspecified', total: r.total, count: r.count })) });
+  } catch (err) { next(err); }
+};
+
 // Export payments in CSV
 exports.exportCSV = async (req, res, next) => {
   try {
@@ -148,8 +206,12 @@ exports.exportCSV = async (req, res, next) => {
     if (endDate) filter.createdAt.$lte = new Date(endDate);
 
     const payments = await Payment.find(filter).populate('userId', 'fullname email').sort({ createdAt: 1 });
-    const header = ['Reference', 'User', 'Email', 'Amount', 'Status', 'Date'];
-    const rows = payments.map(p => [p.referenceNumber, p.userId?.fullname || '', p.userId?.email || '', p.amount, p.status, p.createdAt.toISOString()]);
+    // Reference and Transaction # are now separate columns — previously
+    // this only had 'Reference', which (before transactionNumber existed)
+    // held either a real GCash reference or a MANUAL-<timestamp>
+    // placeholder for cash, indistinguishable from each other.
+    const header = ['Reference', 'Transaction #', 'User', 'Email', 'Amount', 'Method', 'Status', 'Date'];
+    const rows = payments.map(p => [p.referenceNumber || '', p.transactionNumber || '', p.userId?.fullname || '', p.userId?.email || '', p.amount, p.paymentMethod, p.status, p.createdAt.toISOString()]);
     const csv = [header.join(','), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(','))].join('\n');
     res.setHeader('Content-disposition', 'attachment; filename=payments.csv');
     res.setHeader('Content-Type', 'text/csv');
@@ -175,7 +237,7 @@ exports.exportPDF = async (req, res, next) => {
     doc.fontSize(16).text('Payments Report', { align: 'center' });
     doc.moveDown();
     payments.forEach(p => {
-      doc.fontSize(10).text(`Ref: ${p.referenceNumber} | User: ${p.userId?.fullname || ''} | Email: ${p.userId?.email || ''} | Amount: ${p.amount} | Status: ${p.status} | Date: ${p.createdAt.toISOString()}`);
+      doc.fontSize(10).text(`Txn: ${p.transactionNumber || '—'} | Ref: ${p.referenceNumber || '—'} | User: ${p.userId?.fullname || ''} | Email: ${p.userId?.email || ''} | Amount: ${p.amount} | Method: ${p.paymentMethod} | Status: ${p.status} | Date: ${p.createdAt.toISOString()}`);
       doc.moveDown(0.2);
     });
     doc.end();
