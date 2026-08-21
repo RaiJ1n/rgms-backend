@@ -32,6 +32,13 @@ router.get('/:id', classCtrl.getClass);
 // Validators run after upload.single() on purpose — multer is what
 // parses the multipart body into req.body, so express-validator has
 // nothing to check against if it runs first.
+//
+// instructorId: optional and checkFalsy so submitting the "— Unassigned —"
+// option (empty string) passes validation — pickPayload in the controller
+// is what actually converts '' into "no instructor" rather than rejecting
+// it here. A non-empty value must be a real Mongo ObjectId; whether it's
+// actually an existing, active Coach is checked in the controller layer
+// against the Coach collection, not here.
 router.post(
   '/',
   protect,
@@ -44,6 +51,7 @@ router.post(
     body('endTime').notEmpty().withMessage('End time is required'),
     body('capacity').optional().isInt({ min: 1 }).withMessage('Capacity must be at least 1'),
     body('status').optional().isIn(STATUS_VALUES).withMessage('Invalid status'),
+    body('instructorId').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid instructor selected'),
   ],
   classCtrl.createClass
 );
@@ -57,6 +65,7 @@ router.put(
     body('date').optional().isISO8601().withMessage('Enter a valid date'),
     body('capacity').optional().isInt({ min: 1 }).withMessage('Capacity must be at least 1'),
     body('status').optional().isIn(STATUS_VALUES).withMessage('Invalid status'),
+    body('instructorId').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid instructor selected'),
   ],
   classCtrl.updateClass
 );

@@ -32,7 +32,8 @@ const updateProfile = async (req, res, next) => {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const { fullname, email, age, heightCm, weightKg, address, phone, birthDate, facebookUrl, instagramUrl } = req.body;
+    const { fullname, email, age, heightCm, weightKg, address, phone, birthDate, facebookUrl, instagramUrl,
+      medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes, medicalConsent } = req.body;
 
     user.fullname = fullname;
     if (address !== undefined) user.address = address;
@@ -48,6 +49,33 @@ const updateProfile = async (req, res, next) => {
     // <input type="date">; Mongoose casts it to the schema's Date type
     // automatically, same as any other Date-typed field assignment here.
     if (birthDate !== undefined) user.birthDate = birthDate || null;
+
+    // Medical fields (Section H) — any of them arriving requires consent,
+    // either already on file from a previous save or given in this same
+    // request (medicalConsent: true in the body, from the profile form's
+    // checkbox). Without that, the whole request is rejected rather than
+    // silently dropping the medical fields and saving everything else —
+    // a partial save here could look to the member like their medical
+    // info was recorded when it wasn't.
+    const medicalFieldsTouched = [medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes]
+      .some((v) => v !== undefined);
+    if (medicalFieldsTouched) {
+      if (!user.medicalConsentGiven && !medicalConsent) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please check the consent box before saving medical information.',
+        });
+      }
+      if (!user.medicalConsentGiven && medicalConsent) {
+        user.medicalConsentGiven = true;
+        user.medicalConsentDate = new Date();
+      }
+      if (medicalConditions !== undefined) user.medicalConditions = medicalConditions;
+      if (medicalAllergies !== undefined) user.medicalAllergies = medicalAllergies;
+      if (emergencyContactName !== undefined) user.emergencyContactName = emergencyContactName;
+      if (emergencyContactPhone !== undefined) user.emergencyContactPhone = emergencyContactPhone;
+      if (medicalNotes !== undefined) user.medicalNotes = medicalNotes;
+    }
 
     let emailChanged = false;
     if (email && email.toLowerCase() !== user.email) {

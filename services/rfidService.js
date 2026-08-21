@@ -367,6 +367,14 @@ function shortReason(err) {
       return 'Unknown card';
     case 'no_subscription':
       return 'No membership';
+    case 'subscription_expired':
+      return 'Membership expired';
+    case 'subscription_inactive':
+      return 'Membership inactive';
+    case 'member_inactive':
+      return 'Account disabled';
+    case 'employee_inactive':
+      return 'Account disabled';
     case 'duplicate_scan':
       return 'Wait a moment';
     case 'invalid_format':

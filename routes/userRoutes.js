@@ -29,6 +29,15 @@ router.put(
       .trim()
       .isURL()
       .withMessage('Enter a valid Instagram URL'),
+    // Free-text medical fields — length-capped to keep this a quick
+    // reference for an instructor, not a place to paste a full medical
+    // history document.
+    body('medicalConditions').optional({ checkFalsy: true }).isString().trim().isLength({ max: 1000 }),
+    body('medicalAllergies').optional({ checkFalsy: true }).isString().trim().isLength({ max: 500 }),
+    body('emergencyContactName').optional({ checkFalsy: true }).isString().trim().isLength({ max: 200 }),
+    body('emergencyContactPhone').optional({ checkFalsy: true }).isString().trim().isLength({ max: 50 }),
+    body('medicalNotes').optional({ checkFalsy: true }).isString().trim().isLength({ max: 1000 }),
+    body('medicalConsent').optional().isBoolean(),
   ],
   userController.updateProfile
 );

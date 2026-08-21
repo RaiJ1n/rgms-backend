@@ -11,6 +11,8 @@ router.use(protect, admin);
 
 router.get('/summary', analytics.summary);
 router.get('/sales', analytics.salesByRange);
+router.get('/income/by-package', analytics.incomeByPackage);
+router.get('/income/by-method', analytics.incomeByMethod);
 router.get('/export/csv', analytics.exportCSV);
 router.get('/export/pdf', analytics.exportPDF);
 

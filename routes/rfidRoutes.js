@@ -19,6 +19,10 @@ router.post('/register', rfidController.registerCard);
 // GET /api/rfid/logs?page=1&limit=50&startDate=2024-01-01&endDate=2024-01-31
 router.get('/logs', rfidController.getLogs);
 
+// List registered RFID cards (member + employee), most recent first
+// GET /api/rfid/cards?limit=10
+router.get('/cards', rfidController.listCards);
+
 // Get all attendance records for today
 // GET /api/rfid/today
 router.get('/today', rfidController.todayAttendance);
@@ -44,6 +48,10 @@ router.post('/registration-mode', rfidController.setRegistrationMode);
 // Get RFID card info for a specific member
 // GET /api/rfid/member/:userId
 router.get('/member/:userId', rfidController.getMemberRFID);
+
+// Get RFID card info for a specific employee/coach
+// GET /api/rfid/employee/:coachId
+router.get('/employee/:coachId', rfidController.getEmployeeRFID);
 
 // Deactivate (disable) an RFID card
 // PUT /api/rfid/:cardId/deactivate

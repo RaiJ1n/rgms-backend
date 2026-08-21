@@ -4,10 +4,19 @@ const gymClassSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   description: { type: String, trim: true },
 
-  // Plain-text instructor name. There's a Trainer model in this codebase,
-  // but it has no controller/routes wired up yet, so classes just store
-  // the instructor's name directly rather than a Trainer reference.
-  instructor: { type: String, trim: true },
+  // Was a plain-text `instructor` string. Now a real reference to the
+  // Coach model (see models/Coach.js) — classes.md checklist item J
+  // requires "Display the assigned instructor in the class information"
+  // and "Prevent unauthorized users from assigning themselves as
+  // instructors," which a free-text field can't enforce (anyone typing
+  // in the admin form could put any name, real coach or not).
+  //
+  // Migration note: existing classes have a string in the old
+  // `instructor` field with no corresponding Coach account (Coach is a
+  // brand-new model with zero rows). Those old string values are NOT
+  // automatically carried over — this field starts empty on existing
+  // documents until an admin re-assigns a real coach via AdminClasses.vue.
+  instructorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Coach' },
 
   // One-time session — a single date + start/end time, not a recurring
   // weekly schedule (previously an array of {dayOfWeek, date, startTime,

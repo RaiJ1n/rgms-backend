@@ -1,6 +1,7 @@
 const Payment = require('../models/Payment');
 const MembershipPlan = require('../models/MembershipPlan');
 const emailService = require('../services/emailService');
+const generateReceiptNumber = require('../utils/generateReceiptNumber');
 
 const httpError = (message, statusCode) => {
   const err = new Error(message);
@@ -17,6 +18,12 @@ const submitPayment = async (req, res, next) => {
     // approved, or rejected) under the same payment method — prevents a
     // single real transaction being used to spin up multiple Payment
     // records, which an admin could accidentally approve more than once.
+    // This route's own validator (paymentRoutes.js) still requires
+    // referenceNumber for every member-submitted payment, so this check
+    // stays exactly as strict as before — it's unaffected by
+    // referenceNumber becoming optional at the schema level, since that
+    // relaxation was for admin-recorded cash payments, which never reach
+    // this controller at all (see adminController.createManualPayment).
     const existing = await Payment.findOne({ referenceNumber, paymentMethod });
     if (existing) {
       throw httpError('This reference number has already been submitted', 400);
@@ -35,6 +42,7 @@ const submitPayment = async (req, res, next) => {
       userId: req.user._id,
       planId: planId || undefined,
       referenceNumber,
+      transactionNumber: generateReceiptNumber(),
       paymentMethod,
       amount,
       screenshot,
