@@ -100,10 +100,64 @@ const verifyAndChangePassword = async ({ adminId, currentPassword, newPassword, 
   return admin;
 };
 
+// Auto-provisions the very first admin from .env on server boot, if none
+// exists yet — same idea as subscriptionService.js's ensureDefaultPlans().
+// This does NOT change how login works: it still creates a real User
+// document with a real bcrypt-hashed password (via the same pre-save
+// hook every other account uses), logged in through the normal
+// POST /admin/auth/login endpoint. It's purely a replacement for having
+// to remember to run `node scripts/seedAdmin.js` by hand — the .env
+// values are only ever read once, at the moment this creates the row;
+// changing .env afterward does nothing to an admin that already exists.
+//
+// Deliberately NOT a login-time credential check against .env — that
+// would be a hardcoded backdoor: a deactivated/deleted admin could still
+// "log in" as long as the old .env values matched, and it would sidestep
+// every DB-level control (isActive, password changes, deletion) this
+// app already enforces. This only ever touches the database at boot,
+// never during a login attempt.
+const ensureDefaultAdmin = async () => {
+  const { ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_FULLNAME } = process.env;
+
+  // All three unset is the normal case for anyone not using this feature
+  // — stay silent rather than nagging every boot.
+  if (!ADMIN_EMAIL && !ADMIN_PASSWORD && !ADMIN_FULLNAME) return;
+
+  if (!ADMIN_EMAIL || !ADMIN_PASSWORD || !ADMIN_FULLNAME) {
+    console.warn('[admin bootstrap] ADMIN_EMAIL, ADMIN_PASSWORD, and ADMIN_FULLNAME must all be set together in .env — skipping auto-provision.');
+    return;
+  }
+
+  const existingAdminCount = await User.countDocuments({ role: 'admin' });
+  if (existingAdminCount > 0) return; // bootstrap only, same rule seedAdmin.js and requireAdminIfExists both enforce
+
+  const existingEmail = await User.findOne({ email: ADMIN_EMAIL.toLowerCase() });
+  if (existingEmail) {
+    console.warn(`[admin bootstrap] A user with email "${ADMIN_EMAIL}" already exists (role: ${existingEmail.role}) — skipping auto-provision. Choose a different ADMIN_EMAIL or create the admin from Admin Settings once logged in another way.`);
+    return;
+  }
+
+  if (ADMIN_PASSWORD.length < 8) {
+    console.warn('[admin bootstrap] ADMIN_PASSWORD must be at least 8 characters — skipping auto-provision.');
+    return;
+  }
+
+  await User.create({
+    fullname: ADMIN_FULLNAME,
+    email: ADMIN_EMAIL.toLowerCase(),
+    password: ADMIN_PASSWORD, // pre-save hook hashes it, same as any other User
+    role: 'admin',
+    isVerified: true,
+  });
+
+  console.log(`[admin bootstrap] Created first admin account from .env: ${ADMIN_FULLNAME} <${ADMIN_EMAIL}>`);
+};
+
 module.exports = {
   createAdmin,
   loginAdmin,
   getAdmins,
   requestPasswordChangeOtp,
   verifyAndChangePassword,
+  ensureDefaultAdmin,
 };
