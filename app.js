@@ -8,6 +8,8 @@ const subscriptionRoutes = require('./routes/subscriptionRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const adminAuthRoutes = require('./routes/adminAuthRoutes');
+const coachRoutes = require('./routes/coachRoutes');
+const coachAuthRoutes = require('./routes/coachAuthRoutes');
 const rfidRoutes = require('./routes/rfidRoutes');
 const classRoutes = require('./routes/classRoutes');
 const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
@@ -27,6 +29,13 @@ app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin/auth', adminAuthRoutes);
 app.use('/api/admin', adminRoutes);
+// Auth (public) must be mounted before the portal router below —
+// coachRoutes.js applies protectCoach to everything under it via
+// router.use(), so if it were mounted first at the same prefix it
+// would swallow /api/coach/auth/login and 401 it before it ever
+// reached coachAuthController.
+app.use('/api/coach/auth', coachAuthRoutes);
+app.use('/api/coach', coachRoutes); // was '/api/coaches' — didn't match the frontend's '/coach/*' calls
 app.use('/api/rfid', rfidRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);

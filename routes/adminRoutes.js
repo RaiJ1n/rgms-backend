@@ -2,6 +2,7 @@ const express = require('express');
 const { body } = require('express-validator');
 const adminController = require('../controllers/adminController');
 const userController = require('../controllers/userController');
+const coachController = require('../controllers/coachController');
 const { protect } = require('../middleware/authMiddleware');
 const { admin } = require('../middleware/adminMiddleware');
 const upload = require('../middleware/uploadMiddleware');
@@ -10,6 +11,33 @@ const router = express.Router();
 
 router.use(protect, admin);
 router.get('/users', adminController.getUsers);
+
+router.get('/coaches', coachController.getCoaches);
+router.get('/coaches/:id', coachController.getCoach);
+router.post(
+  '/coaches',
+  [
+    body('fullname').notEmpty().withMessage('Full name is required'),
+    body('email').isEmail().withMessage('Valid email is required'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    body('specialization').optional().isString().trim(),
+  ],
+  coachController.createCoach
+);
+router.put(
+  '/coaches/:id',
+  [
+    body('fullname').optional().notEmpty().withMessage('Full name is required'),
+    body('email').optional().isEmail().withMessage('Enter a valid email').normalizeEmail(),
+    body('specialization').optional().isString().trim(),
+  ],
+  coachController.updateCoach
+);
+router.put(
+  '/coaches/:id/status',
+  [body('isActive').isBoolean().withMessage('isActive must be true or false')],
+  coachController.setCoachStatus
+);
 
 router.get('/members', adminController.getMembers);
 router.post(

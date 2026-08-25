@@ -1,6 +1,7 @@
 require('dotenv').config();
 const app = require('./app');
 const connectDB = require('./config/db');
+const adminService = require('./services/adminService');
 const http = require('http');
 const socketUtil = require('./utils/socket');
 const PORT = process.env.PORT || 4000;
@@ -26,8 +27,15 @@ try {
 // ============================================================================
 
 connectDB()
-  .then(() => {
+  .then(async () => {
     console.log('[SERVER] ✓ MongoDB connected');
+
+    try {
+      await adminService.ensureDefaultAdmin();
+      console.log('[SERVER] ✓ Default admin bootstrap check complete');
+    } catch (error) {
+      console.warn('[SERVER] ⚠️ Default admin bootstrap failed:', error.message);
+    }
     
     // Create HTTP server (required for Socket.IO)
     const server = http.createServer(app);
