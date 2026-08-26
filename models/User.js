@@ -19,6 +19,18 @@ const userSchema = new mongoose.Schema({
 
   isActive: { type: Boolean, default: true },
 
+  // Coach-only fields. Only ever set/read when role === 'coach' — a
+  // regular member/admin document just leaves these at their defaults.
+  // Kept on User (not a separate collection) so that Coach accounts are
+  // ordinary User documents like everything else the unified
+  // POST /auth/login already authenticates against.
+  specialization: { type: String, trim: true },
+  // Who created this coach account — always the admin who created it,
+  // never the coach themself (mirrors createMember's admin-only flow).
+  // Section J: "Prevent unauthorized users from assigning themselves as
+  // instructors."
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
   studentPromoActive: { type: Boolean, default: false },
 
   phone: { type: String, 

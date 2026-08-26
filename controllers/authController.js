@@ -32,6 +32,14 @@ const register = async (req, res, next) => {
   }
 };
 
+// Single unified login for every account type — Admin, Coach, and
+// User/Member all sign in here. There's no "role" field in the request
+// body and there never should be: authService.loginUser looks the
+// account up by email only, and whatever role is stored on that User
+// document (set at account creation, never by the login request) is
+// what comes back in safeUser.role. The frontend uses that returned
+// role to decide which dashboard to redirect to; it must never accept
+// a role the client asserts about itself.
 const login = async (req, res, next) => {
   try {
     const errors = validationResult(req);

@@ -19,19 +19,11 @@ const registerAdmin = async (req, res, next) => {
   }
 };
 
-const loginAdmin = async (req, res, next) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+// loginAdmin was removed — admin login now goes through the single
+// unified authController.login (POST /api/auth/login), which already
+// authenticates against the same User collection admins live in. Keeping
+// a second admin-only login handler around would let the two drift out
+// of sync (e.g. one gets an isActive check updated, the other doesn't),
+// which is exactly the bug class this whole change is meant to remove.
 
-    const { email, password } = req.body;
-    const { admin, token } = await adminService.loginAdmin({ email, password });
-    const safeAdmin = admin.toObject();
-    delete safeAdmin.password;
-    res.json({ success: true, message: 'Login successful', data: { admin: safeAdmin, token } });
-  } catch (error) {
-    next(error);
-  }
-};
-
-module.exports = { registerAdmin, loginAdmin };
+module.exports = { registerAdmin };
