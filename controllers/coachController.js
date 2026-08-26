@@ -1,18 +1,29 @@
 const { validationResult } = require('express-validator');
-const Coach = require('../models/Coach');
+const User = require('../models/User');
 const escapeRegex = require('../utils/escapeRegex');
 const { parsePagination } = require('../utils/paginate');
 
 // All of these sit behind adminRoutes.js's router.use(protect, admin) —
 // same as getMembers/createMember/etc. in adminController.js. Only an
 // authenticated admin can reach any of this.
+//
+// Coaches are User documents with role: 'coach' — NOT a separate
+// collection. This used to be a standalone `Coach` model/collection,
+// which is why admin-created coaches could never log in: the unified
+// POST /auth/login only ever queries the User collection
+// (authService.loginUser -> User.findOne({ email })), so an account
+// living anywhere else was invisible to login no matter how correct
+// the credentials were. Every query below is scoped with
+// { role: 'coach' } (mirroring how adminController.js scopes member
+// queries with { role: 'user' }) so these endpoints can only ever see
+// or touch coach accounts, never admins or members.
 
 const getCoaches = async (req, res, next) => {
   try {
     const { page, limit, skip, isExport } = parsePagination(req.query);
     const { search, isActive } = req.query;
 
-    const filter = {};
+    const filter = { role: 'coach' };
     if (search) {
       const re = new RegExp(escapeRegex(search), 'i');
       filter.$or = [{ fullname: re }, { email: re }, { specialization: re }];
@@ -25,8 +36,8 @@ const getCoaches = async (req, res, next) => {
       filter.isActive = isActive === 'true';
     }
 
-    const total = await Coach.countDocuments(filter);
-    const coaches = await Coach.find(filter).select('-password').sort({ createdAt: -1 }).skip(skip).limit(limit);
+    const total = await User.countDocuments(filter);
+    const coaches = await User.find(filter).select('-password').sort({ createdAt: -1 }).skip(skip).limit(limit);
 
     res.json({
       success: true,
@@ -43,7 +54,7 @@ const getCoaches = async (req, res, next) => {
 
 const getCoach = async (req, res, next) => {
   try {
-    const coach = await Coach.findById(req.params.id).select('-password');
+    const coach = await User.findOne({ _id: req.params.id, role: 'coach' }).select('-password');
     if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
     res.json({ success: true, data: coach });
   } catch (error) {
@@ -54,6 +65,13 @@ const getCoach = async (req, res, next) => {
 // The only way a coach account can be created — always by an authenticated
 // admin, never by the coach themself. Closes the self-registration gap in
 // the current CoachSignup.vue flow.
+//
+// Creates a normal User document with role: 'coach' (same shape/hook
+// chain as adminController.createMember's role: 'user'), so the account
+// this endpoint creates is the exact same kind of record the unified
+// POST /auth/login already knows how to authenticate — no separate
+// login path, no separate collection, nothing coach-specific to keep
+// in sync by hand.
 const createCoach = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -61,16 +79,22 @@ const createCoach = async (req, res, next) => {
 
     const { fullname, email, password, specialization } = req.body;
 
-    const existing = await Coach.findOne({ email: email.toLowerCase() });
+    // Email is unique across the whole User collection (admins, members,
+    // and coaches all share it), so this check also catches a coach
+    // email colliding with an existing member/admin account — which is
+    // correct: it's the same login table now.
+    const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) {
-      return res.status(409).json({ success: false, message: 'A coach with this email already exists' });
+      return res.status(409).json({ success: false, message: 'An account with this email already exists' });
     }
 
-    const coach = await Coach.create({
+    const coach = await User.create({
       fullname,
       email: email.toLowerCase(),
       password,
       specialization,
+      role: 'coach',
+      isVerified: true, // admin-created, same as createMember — no self-serve verification step
       createdBy: req.user._id,
     });
 
@@ -88,7 +112,7 @@ const updateCoach = async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const coach = await Coach.findById(req.params.id);
+    const coach = await User.findOne({ _id: req.params.id, role: 'coach' });
     if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
 
     const { fullname, specialization, email } = req.body;
@@ -96,15 +120,17 @@ const updateCoach = async (req, res, next) => {
     if (specialization !== undefined) coach.specialization = specialization;
 
     if (email && email.toLowerCase() !== coach.email) {
-      const existing = await Coach.findOne({ email: email.toLowerCase(), _id: { $ne: coach._id } });
+      const existing = await User.findOne({ email: email.toLowerCase(), _id: { $ne: coach._id } });
       if (existing) {
-        return res.status(409).json({ success: false, message: 'Email is already in use by another coach' });
+        return res.status(409).json({ success: false, message: 'Email is already in use by another account' });
       }
       coach.email = email.toLowerCase();
     }
 
     await coach.save();
-    res.json({ success: true, message: 'Coach updated', data: coach });
+    const safeCoach = coach.toObject();
+    delete safeCoach.password;
+    res.json({ success: true, message: 'Coach updated', data: safeCoach });
   } catch (error) {
     next(error);
   }
@@ -116,15 +142,17 @@ const setCoachStatus = async (req, res, next) => {
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
     const { isActive } = req.body;
-    const coach = await Coach.findById(req.params.id);
+    const coach = await User.findOne({ _id: req.params.id, role: 'coach' });
     if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
 
     coach.isActive = !!isActive;
     await coach.save();
+    const safeCoach = coach.toObject();
+    delete safeCoach.password;
     res.json({
       success: true,
       message: coach.isActive ? 'Coach activated' : 'Coach deactivated — this coach can no longer log in',
-      data: coach,
+      data: safeCoach,
     });
   } catch (error) {
     next(error);

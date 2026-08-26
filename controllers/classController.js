@@ -1,6 +1,11 @@
 const { validationResult } = require('express-validator');
 const GymClass = require('../models/GymClass');
-const Coach = require('../models/Coach');
+// Coaches are User documents with role: 'coach' — not a separate
+// collection. models/Coach.js is deprecated (exports {}, no
+// mongoose.model registered under 'Coach'), so any Coach.findById/find
+// call here would throw "Coach.findById is not a function". Use User,
+// scoped to role: 'coach', the same way coachController.js already does.
+const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
 const cloudinary = require('../config/cloudinary');
 const socketUtil = require('../utils/socket');
@@ -90,7 +95,7 @@ function pickPayload(body) {
 // coach, or to any well-formed ObjectId at all.
 async function assertValidInstructor(instructorId) {
   if (!instructorId) return; // unassigning is always fine
-  const coach = await Coach.findById(instructorId).select('isActive');
+  const coach = await User.findOne({ _id: instructorId, role: 'coach' }).select('isActive');
   if (!coach) {
     throw Object.assign(new Error('Selected instructor was not found'), { statusCode: 404 });
   }
@@ -155,7 +160,7 @@ exports.getAllClassesAdmin = async (req, res, next) => {
       // name OR by one of those instructor ids — two queries instead of
       // one, but no change to the find()-based pattern used everywhere
       // else in this controller (no aggregation pipeline needed).
-      const matchingCoachIds = await Coach.find({ fullname: re }).distinct('_id');
+      const matchingCoachIds = await User.find({ fullname: re, role: 'coach' }).distinct('_id');
       filter.$or = [{ name: re }, { instructorId: { $in: matchingCoachIds } }];
     }
 
