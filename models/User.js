@@ -33,6 +33,29 @@ const userSchema = new mongoose.Schema({
 
   studentPromoActive: { type: Boolean, default: false },
 
+  // --- Coach Management / Client-Coach Registration System ---
+  // More coach-only fields, following the exact same convention as
+  // `specialization` above: plain fields on the shared User document,
+  // only ever set/read when role === 'coach'. Kept here rather than a
+  // separate Coach/CoachProfile collection for the same reason
+  // `specialization` is — see the big comment at the top of this
+  // schema. `age`, `phone` (contact number), `address`, and `photo`
+  // (profile picture) already exist above and are reused as-is for a
+  // coach's public profile, rather than duplicating them under new
+  // names.
+  sex: { type: String, enum: ['Male', 'Female', 'Other'], trim: true },
+  occupation: { type: String, trim: true },
+  fitnessJourney: { type: String, trim: true },
+  currentFitnessGoal: { type: String, trim: true },
+  preferredExerciseTime: { type: String, trim: true },
+  // Admin-controlled public visibility — whether this coach shows up on
+  // the Client/User "Coaches" page. Defaults to false (hidden) so a
+  // freshly admin-created coach account isn't publicly bookable before
+  // the admin has reviewed/decided to display it. Toggled only via
+  // PUT /admin/coaches/:id/visibility (coachController.setCoachVisibility)
+  // — never settable by the coach themselves.
+  isDisplayed: { type: Boolean, default: false },
+
   phone: { type: String, 
     trim: true },
   address: { type: String,

@@ -15,11 +15,6 @@ function parseRange(q) {
   return match;
 }
 
-// A subscription is a "new membership" if it's the earliest subscription
-// (by createdAt) that user has ever had — any status, not just active,
-// and not limited to the date range — and a "renewal" otherwise. Previously
-// newMemberships and renewals ran the exact same countDocuments query, so
-// they always reported identical (and meaningless) numbers.
 const getNewVsRenewalCounts = async (match) => {
   const activeSubsInRange = await Subscription.find({ ...match, status: 'active' })
     .select('userId createdAt')
@@ -52,45 +47,17 @@ const getNewVsRenewalCounts = async (match) => {
 exports.summary = async (req, res, next) => {
   try {
     const match = parseRange(req.query);
-
-    // Total revenue & sales — only approved payments count as real income.
-    // Pending/rejected amounts were previously included here, which
-    // overstated revenue by whatever was still awaiting admin review.
     const payments = await Payment.aggregate([
       { $match: { ...match, status: 'approved' } },
       { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
     ]);
 
     const totalRevenue = payments[0] ? payments[0].total : 0;
-
-    // New memberships vs renewals in range — a user's first-ever
-    // subscription counts as "new"; any subsequent one is a "renewal".
     const { newMemberships, renewals } = await getNewVsRenewalCounts(match);
-
-    // Active vs expired — was Subscription.countDocuments({status:'active'})
-    // / {status:'expired'}. subscriptionService.js's own comment explains
-    // why that's wrong: nothing in this codebase ever flips a
-    // subscription's status from 'active' to 'expired' as time passes, so
-    // the stored status field can't answer "is this active right now" on
-    // its own — it only reflects what was true at creation time. A
-    // subscription created months ago with status:'active' and an endDate
-    // long past would still count here under the old query. This mirrors
-    // adminController.js's deriveStatus(), which already gets this right
-    // for the member list/detail views — this is the same fix applied to
-    // the dashboard's numbers.
-    //
-    // "Active member" also means one *member*, not one *subscription* row
-    // — a member with two subscription rows (e.g. renewed while the old
-    // one hadn't technically lapsed) should count once, not twice.
     const now = new Date();
     const activeUserIds = await Subscription.distinct('userId', { status: 'active', endDate: { $gte: now } });
     const activeUserIdSet = new Set(activeUserIds.map((id) => id.toString()));
     const activeCount = activeUserIds.length;
-
-    // Distinct users whose only 'active'-status subscription(s) have all
-    // lapsed — excludes anyone already counted in activeCount (e.g. a
-    // member with an old expired row plus a newer, still-valid renewal
-    // should only ever count as active, never as both).
     const everActiveUserIds = await Subscription.distinct('userId', { status: 'active', endDate: { $lt: now } });
     const expiredCount = everActiveUserIds.filter((id) => !activeUserIdSet.has(id.toString())).length;
 
@@ -161,8 +128,6 @@ exports.salesByRange = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// Income by membership package/plan — Section G requirement: separate
-// income totals per package type, not just an overall figure.
 exports.incomeByPackage = async (req, res, next) => {
   try {
     const match = parseRange(req.query);
@@ -180,8 +145,6 @@ exports.incomeByPackage = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// Income by payment method (Walk-in/GCash/etc.) — the other Section G
-// breakdown that had no endpoint at all before this.
 exports.incomeByMethod = async (req, res, next) => {
   try {
     const match = parseRange(req.query);
@@ -206,10 +169,6 @@ exports.exportCSV = async (req, res, next) => {
     if (endDate) filter.createdAt.$lte = new Date(endDate);
 
     const payments = await Payment.find(filter).populate('userId', 'fullname email').sort({ createdAt: 1 });
-    // Reference and Transaction # are now separate columns — previously
-    // this only had 'Reference', which (before transactionNumber existed)
-    // held either a real GCash reference or a MANUAL-<timestamp>
-    // placeholder for cash, indistinguishable from each other.
     const header = ['Reference', 'Transaction #', 'User', 'Email', 'Amount', 'Method', 'Status', 'Date'];
     const rows = payments.map(p => [p.referenceNumber || '', p.transactionNumber || '', p.userId?.fullname || '', p.userId?.email || '', p.amount, p.paymentMethod, p.status, p.createdAt.toISOString()]);
     const csv = [header.join(','), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(','))].join('\n');

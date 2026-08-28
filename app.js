@@ -10,6 +10,7 @@ const adminRoutes = require('./routes/adminRoutes');
 const adminAuthRoutes = require('./routes/adminAuthRoutes');
 const coachRoutes = require('./routes/coachRoutes');
 const coachAuthRoutes = require('./routes/coachAuthRoutes');
+const coachDirectoryRoutes = require('./routes/coachDirectoryRoutes'); // NEW — Client/User browsing & registering to coaches
 const rfidRoutes = require('./routes/rfidRoutes');
 const classRoutes = require('./routes/classRoutes');
 const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
@@ -36,6 +37,11 @@ app.use('/api/admin', adminRoutes);
 // reached coachAuthController.
 app.use('/api/coach/auth', coachAuthRoutes);
 app.use('/api/coach', coachRoutes); // was '/api/coaches' — didn't match the frontend's '/coach/*' calls
+// '/api/coaches' (plural) is a distinct mount from '/api/coach' above —
+// Express matches mount paths on a segment boundary, so a request to
+// /api/coaches/... is never swallowed by the /api/coach router. Client/
+// User-facing browsing + registration for the Coach Management system.
+app.use('/api/coaches', coachDirectoryRoutes); // NEW
 app.use('/api/rfid', rfidRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);

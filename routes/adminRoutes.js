@@ -3,6 +3,7 @@ const { body } = require('express-validator');
 const adminController = require('../controllers/adminController');
 const userController = require('../controllers/userController');
 const coachController = require('../controllers/coachController');
+const coachQuestionController = require('../controllers/CoachQuestionController');
 const { protect } = require('../middleware/authMiddleware');
 const { admin } = require('../middleware/adminMiddleware');
 const upload = require('../middleware/uploadMiddleware');
@@ -38,6 +39,39 @@ router.put(
   [body('isActive').isBoolean().withMessage('isActive must be true or false')],
   coachController.setCoachStatus
 );
+// Section 9: Admin-controlled public visibility, separate from account
+// activation above — see coachController.setCoachVisibility.
+router.put(
+  '/coaches/:id/visibility',
+  [body('isDisplayed').isBoolean().withMessage('isDisplayed must be true or false')],
+  coachController.setCoachVisibility
+);
+
+// Section 10: Coach Registration Questions management.
+router.get('/coach-questions', coachQuestionController.getQuestions);
+router.post(
+  '/coach-questions',
+  [
+    body('question').notEmpty().withMessage('Question text is required'),
+    body('type').optional().isIn(['text', 'choice', 'multi_choice']).withMessage('Invalid question type'),
+    body('options').optional().isArray().withMessage('Options must be a list'),
+    body('isActive').optional().isBoolean(),
+    body('order').optional().isInt(),
+  ],
+  coachQuestionController.createQuestion
+);
+router.put(
+  '/coach-questions/:id',
+  [
+    body('question').optional().notEmpty().withMessage('Question text is required'),
+    body('type').optional().isIn(['text', 'choice', 'multi_choice']).withMessage('Invalid question type'),
+    body('options').optional().isArray().withMessage('Options must be a list'),
+    body('isActive').optional().isBoolean(),
+    body('order').optional().isInt(),
+  ],
+  coachQuestionController.updateQuestion
+);
+router.delete('/coach-questions/:id', coachQuestionController.deleteQuestion);
 
 router.get('/members', adminController.getMembers);
 router.post(

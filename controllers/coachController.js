@@ -159,4 +159,37 @@ const setCoachStatus = async (req, res, next) => {
   }
 };
 
-module.exports = { getCoaches, getCoach, createCoach, updateCoach, setCoachStatus };
+// Admin-only control over whether a coach is publicly displayed on the
+// Client/User "Coaches" page (Section 9). Distinct from setCoachStatus
+// above — isActive controls whether the coach can log in at all,
+// isDisplayed only controls public visibility. Hiding a coach here must
+// NOT touch isActive, existing CoachRegistrationRequest documents, or
+// any already-accepted client relationship — see the model comments on
+// CoachRegistrationRequest for why accepted relationships are untouched
+// by this toggle.
+const setCoachVisibility = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { isDisplayed } = req.body;
+    const coach = await User.findOne({ _id: req.params.id, role: 'coach' });
+    if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
+
+    coach.isDisplayed = !!isDisplayed;
+    await coach.save();
+    const safeCoach = coach.toObject();
+    delete safeCoach.password;
+    res.json({
+      success: true,
+      message: coach.isDisplayed
+        ? 'Coach is now visible to clients'
+        : 'Coach is now hidden from clients',
+      data: safeCoach,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = { getCoaches, getCoach, createCoach, updateCoach, setCoachStatus, setCoachVisibility };
