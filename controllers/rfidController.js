@@ -7,45 +7,6 @@ const AuditLog = require('../models/AuditLog');
 const socketUtil = require('../utils/socket');
 const rfidService = require('../services/rfidService');
 
-// ============================================================================
-// RFID CONTROLLER - REST API Endpoints for RFID Management
-// ============================================================================
-//
-// Endpoints:
-// - POST /api/rfid/register → Register new RFID card to a member OR employee
-// - POST /api/rfid/scan → Handle card scan (from Arduino device)
-// - GET /api/rfid/logs → Get RFID scan logs (pagination)
-// - GET /api/rfid/today → Get today's attendance
-// - GET /api/rfid/status → Get Arduino connection status
-//
-// ============================================================================
-
-// ============================================================================
-// ENDPOINT: Register RFID Card to a Member or Employee
-// ============================================================================
-//
-// Route: POST /api/rfid/register
-// Auth: Admin only
-// Request Body: { userId, cardId } for a member, OR { coachId, cardId } for
-// an employee/coach — exactly one of userId/coachId, never both. This is
-// the one place that distinction is enforced; RFIDCard.js's schema allows
-// both fields to technically exist so it can reuse the same document shape
-// for either kind of card (see the comment there for why).
-//
-// Process:
-// 1. Validate cardId format (should be UID from Arduino)
-// 2. Validate exactly one of userId/coachId was provided
-// 3. Check card not already registered
-// 4. Create RFIDCard document
-// 5. Broadcast update via Socket.IO
-//
-// Error Codes:
-// - 400: Card already registered, missing fields, or both/neither of
-//   userId+coachId supplied
-// - 404: User or Coach not found
-// - 422: Validation errors
-//
-
 exports.registerCard = async (req, res, next) => {
   try {
     const { userId, coachId, cardId } = req.body;
@@ -143,20 +104,6 @@ exports.registerCard = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// ENDPOINT: List Registered RFID Cards
-// ============================================================================
-//
-// Route: GET /api/rfid/cards
-// Auth: Admin only
-//
-// Was missing entirely — AdminrfidRegistration.vue's "Recently Registered
-// Cards" table was actually calling GET /rfid/logs (Attendance records)
-// and rendering fields (cardId, assignedAt, active) that only exist on
-// RFIDCard, not Attendance. This is the endpoint that table should have
-// been calling all along.
-//
-
 exports.listCards = async (req, res, next) => {
   try {
     const { limit = 10 } = req.query;
@@ -240,18 +187,6 @@ exports.getLogs = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// ENDPOINT: Get Today's Attendance
-// ============================================================================
-//
-// Route: GET /api/rfid/today
-// Auth: Admin only
-//
-// Returns: All attendance records for today (check-in and check-out times),
-// members and employees together — filter client-side by subjectType if a
-// view needs to split them (see AdminliveAttendance.vue).
-//
-
 exports.todayAttendance = async (req, res, next) => {
   try {
     const start = new Date();
@@ -278,16 +213,6 @@ exports.todayAttendance = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// ENDPOINT: Get Arduino Connection Status
-// ============================================================================
-//
-// Route: GET /api/rfid/status
-// Auth: Admin only
-//
-// Returns: Current Arduino connection status
-//
-
 exports.getStatus = async (req, res, next) => {
   try {
     const status = rfidService.getStatus();
@@ -301,14 +226,6 @@ exports.getStatus = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// ENDPOINT: List Available Serial Ports
-// ============================================================================
-//
-// Route: GET /api/rfid/ports
-// Auth: Admin only
-//
-
 exports.listPorts = async (req, res, next) => {
   try {
     const ports = await rfidService.listPorts();
@@ -317,15 +234,6 @@ exports.listPorts = async (req, res, next) => {
     next(err);
   }
 };
-
-// ============================================================================
-// ENDPOINT: Connect to a Specific Serial Port
-// ============================================================================
-//
-// Route: POST /api/rfid/connect
-// Auth: Admin only
-// Request Body: { port, baudRate? }
-//
 
 exports.connectPort = async (req, res, next) => {
   try {
@@ -344,15 +252,6 @@ exports.connectPort = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// ENDPOINT: Toggle Registration Mode
-// ============================================================================
-//
-// Route: POST /api/rfid/registration-mode
-// Auth: Admin only
-// Request Body: { enabled: boolean }
-//
-
 exports.setRegistrationMode = async (req, res, next) => {
   try {
     const { enabled } = req.body;
@@ -362,14 +261,6 @@ exports.setRegistrationMode = async (req, res, next) => {
     next(err);
   }
 };
-
-// ============================================================================
-// ENDPOINT: Get Member's RFID Card Info
-// ============================================================================
-//
-// Route: GET /api/rfid/member/:userId
-// Auth: Admin only
-//
 
 exports.getMemberRFID = async (req, res, next) => {
   try {
@@ -393,18 +284,6 @@ exports.getMemberRFID = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// ENDPOINT: Get Employee's RFID Card Info
-// ============================================================================
-//
-// Route: GET /api/rfid/employee/:coachId
-// Auth: Admin only
-//
-// Mirrors getMemberRFID above — new endpoint for employee cards rather
-// than overloading the same route with a mixed-type param, since the two
-// need different populate targets (User vs Coach).
-//
-
 exports.getEmployeeRFID = async (req, res, next) => {
   try {
     const { coachId } = req.params;
@@ -427,16 +306,6 @@ exports.getEmployeeRFID = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// ENDPOINT: Deactivate RFID Card
-// ============================================================================
-//
-// Route: PUT /api/rfid/:cardId/deactivate
-// Auth: Admin only
-//
-// Disables an RFID card (useful when lost or stolen) — works for both
-// member and employee cards unchanged, since it only ever touches `active`.
-//
 
 exports.deactivateCard = async (req, res, next) => {
   try {
@@ -470,21 +339,6 @@ exports.deactivateCard = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// ENDPOINT: Reassign RFID Card to a Different Member
-// ============================================================================
-//
-// Route: PUT /api/rfid/:cardId/reassign
-// Auth: Admin only
-// Request Body: { userId }
-//
-// Unchanged from before — member-to-member reassignment only. Reassigning
-// an employee card to a different coach, or converting a card between
-// member/employee ownership, isn't exposed here; that's a deliberately
-// narrower operation an admin can already achieve via deactivate + a fresh
-// registerCard call, which keeps the audit trail (who was assigned when)
-// intact rather than silently rewriting card history.
-//
 
 exports.reassignCard = async (req, res, next) => {
   try {

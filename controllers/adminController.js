@@ -397,9 +397,6 @@ const approvePayment = async (req, res, next) => {
     await payment.save();
     await emailService.sendPaymentStatusEmail(await User.findById(payment.userId), payment);
 
-    // The member-facing pages promise membership activates as soon as the
-    // payment is verified — so approving here also creates the
-    // subscription, instead of leaving that as a separate manual step.
     let subscription = null;
     let subscriptionError = null;
     if (payment.planId) {
@@ -410,22 +407,14 @@ const approvePayment = async (req, res, next) => {
           paymentId: payment._id,
         });
       } catch (subErr) {
-        // Most likely cause: this payment was already approved once and a
-        // subscription already exists for it. Don't fail the whole
-        // approval over that — just surface it so the admin can see it.
+
         subscriptionError = subErr.message;
       }
     }
 
-    // subscriptionService.createSubscription already emits 'stats:refresh'
-    // when it succeeds; still emit here too so a plain approval — no
-    // planId, or the subscription step failed — still moves the pending
-    // count and revenue total on open admin screens.
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('payment:updated', payment);
     socketUtil.emitToUser(payment.userId, 'payment:updated', payment);
-    // Membership status/plan on the member list & detail page is derived
-    // from the subscription this approval may have just created.
     socketUtil.emitToAdmins('member:updated', { _id: payment.userId });
 
     res.json({
@@ -461,10 +450,6 @@ const rejectPayment = async (req, res, next) => {
   }
 };
 
-// A payment an admin records directly — cash at the front desk, a walk-in,
-// or anything that didn't go through the member's own /payments/submit
-// flow. Goes straight to 'approved' since the admin is the one confirming
-// the money was received; there's no pending review step to skip.
 const createManualPayment = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -481,12 +466,6 @@ const createManualPayment = async (req, res, next) => {
     const payment = await Payment.create({
       userId,
       planId,
-      // Was: referenceNumber || `MANUAL-${Date.now()}` — stuffing a
-      // placeholder into the field meant for a real external GCash
-      // reference. Now left genuinely empty for Walk-in/cash (undefined,
-      // not a fake string) unless the admin actually typed one; the
-      // real system-generated identifier is transactionNumber below,
-      // generated for every payment regardless of method.
       referenceNumber: referenceNumber || undefined,
       transactionNumber: generateReceiptNumber(),
       paymentMethod: paymentMethod || 'Walk-in',
@@ -495,15 +474,6 @@ const createManualPayment = async (req, res, next) => {
     });
     await payment.populate('planId', 'name duration');
 
-    // Manual payments skip the pending-review step, but membership should
-    // still activate/extend exactly the way it does when an admin approves
-    // a member-submitted payment (see approvePayment below) — otherwise a
-    // walk-in payment gets recorded in Payment History but never actually
-    // grants the member any days. createSubscription itself decides
-    // extend-vs-fresh-start based on the member's current subscription
-    // (see getExpiryBaseDate in subscriptionService.js) — nothing about
-    // that decision needs to be duplicated here.
-    let subscription = null;
     let subscriptionError = null;
     try {
       subscription = await subscriptionService.createSubscription({
@@ -542,11 +512,6 @@ const getSubscriptions = async (req, res, next) => {
     next(error);
   }
 };
-
-// Manual check-in for a member who can't scan (forgot/lost their card,
-// or the Arduino is offline). Mirrors what a real RFID scan produces —
-// an Attendance row with checkIn set — so it shows up in Today's
-// Attendance and the weekly chart exactly the same way.
 const createManualAttendance = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -652,11 +617,6 @@ const approveStudentId = async (req, res, next) => {
     const user = await User.findByIdAndUpdate(submission.userId, { studentPromoActive: true }, { new: true });
     if (user) {
       await emailService.sendStudentVerificationEmail(user, true);
-      // Push the fresh studentPromoActive flag to the member's own live
-      // session so their client updates immediately instead of only
-      // picking it up on next login. Strip the password before it goes
-      // out over the socket — findByIdAndUpdate above didn't .select it
-      // off, so `user` still carries the hash.
       const safeUser = user.toObject();
       delete safeUser.password;
       socketUtil.emitToUser(submission.userId, 'user:profile-updated', safeUser);

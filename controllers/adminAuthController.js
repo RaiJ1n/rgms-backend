@@ -19,11 +19,4 @@ const registerAdmin = async (req, res, next) => {
   }
 };
 
-// loginAdmin was removed — admin login now goes through the single
-// unified authController.login (POST /api/auth/login), which already
-// authenticates against the same User collection admins live in. Keeping
-// a second admin-only login handler around would let the two drift out
-// of sync (e.g. one gets an isActive check updated, the other doesn't),
-// which is exactly the bug class this whole change is meant to remove.
-
 module.exports = { registerAdmin };
