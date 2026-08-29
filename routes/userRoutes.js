@@ -43,6 +43,30 @@ router.put(
 );
 // Upload or replace profile photo
 router.put('/profile/photo', upload.single('photo'), userController.uploadProfilePhoto);
+// Upload/replace, view, and remove the medical document (certificate,
+// clearance, doctor's note). Uses the separate, secured uploader from
+// uploadMiddleware.js — see that file for why this isn't just `upload`.
+router.put(
+  '/profile/medical-document',
+  (req, res, next) => {
+    upload.uploadMedicalDocument.single('medicalDocument')(req, res, (err) => {
+      if (err) {
+        // multer errors (bad file type from fileFilter, file too large) land
+        // here rather than in the route handler, since multer itself calls
+        // next(err) before req even reaches userController.
+        const message =
+          err.code === 'LIMIT_FILE_SIZE'
+            ? 'File is too large. Maximum size is 5MB.'
+            : err.message || 'Could not upload file.';
+        return res.status(400).json({ success: false, message });
+      }
+      next();
+    });
+  },
+  userController.uploadMedicalDocument
+);
+router.get('/profile/medical-document', userController.viewMedicalDocument);
+router.delete('/profile/medical-document', userController.deleteMedicalDocument);
 router.get('/profile/social', userController.getSocialAccounts);
 router.put(
   '/change-password',

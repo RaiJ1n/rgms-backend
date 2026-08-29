@@ -103,6 +103,27 @@ const userSchema = new mongoose.Schema({
   medicalConsentGiven: { type: Boolean, default: false },
   medicalConsentDate: { type: Date },
 
+  // --- Medical document upload (Bento redesign) ---
+  // A single uploaded file (image or PDF) — a medical certificate,
+  // clearance, or doctor's note — distinct from the free-text medical
+  // fields above. Stored as an `authenticated` Cloudinary resource (see
+  // uploadMiddleware.js's uploadMedicalDocument) so `url`/`public_id`
+  // alone are not enough to fetch the file; viewing always goes through
+  // userController.viewMedicalDocument, which checks ownership and
+  // mints a short-lived signed URL. Same one-file-at-a-time convention
+  // as `photo` above — uploading again replaces it (old Cloudinary
+  // asset is cleaned up the same way deleteCloudinaryImage() already
+  // does for photos).
+  medicalDocument: {
+    url: { type: String },
+    public_id: { type: String },
+    resourceType: { type: String }, // Cloudinary resource_type used at upload time (needed to sign/delete correctly)
+    fileName: { type: String },
+    fileType: { type: String }, // MIME type, e.g. 'application/pdf', 'image/png'
+    fileSize: { type: Number }, // bytes
+    uploadedAt: { type: Date },
+  },
+
   // Forgot-password OTP (unauthenticated flow, started from the Login
   // page's "Forgot Password" link). Same hash-then-store convention as
   // passwordChangeOtp below — only the sha256 hash is ever persisted,
