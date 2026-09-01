@@ -3,6 +3,15 @@ const { ReadlineParser } = require('@serialport/parser-readline');
 const socketUtil = require('../utils/socket');
 const attendanceService = require('../services/attendanceService');
 const RfidConfig = require('../models/RfidConfig');
+const { getScanMessage } = require('../utils/scanMessages');
+
+// How long the initial "WELCOME / <name>" LCD message stays up before
+// being replaced by the "TIME IN / SUCCESS" stage — matches the 2-second
+// timing called out in the spec. This assumes the sketch simply
+// redisplays whatever it next receives over serial (the existing
+// behavior this file already relied on for every other message); it does
+// not require any sketch changes.
+const LCD_STAGE_DELAY_MS = 2000;
 
 // ============================================================================
 // RFID SERVICE - Serial Port Management & Arduino Communication
@@ -264,6 +273,14 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
       parser = serialPort.pipe(new ReadlineParser({ delimiter: '\n' }));
       parser.on('data', handleRFIDData);
 
+      // Resync the Arduino's idle screen to the backend's current
+      // registrationMode. Covers the case where the backend restarts
+      // (registrationMode resets to false in memory) while the Arduino
+      // stays powered on and mid-registration — without this it would
+      // keep showing "REGISTER MODE" indefinitely since nothing else
+      // would tell it otherwise.
+      exports.sendToArduino(`MODE:${registrationMode ? 'REGISTER' : 'ATTENDANCE'}`);
+
       // FIX (kept from the original): both 'error' and 'close' fire on a
       // real disconnect — routing both through the same guarded function
       // avoids double reconnect timers.
@@ -343,45 +360,38 @@ async function handleRFIDData(line) {
     const { action, user } = await attendanceService.processScan(uid);
     console.log(`[RFID] ✓ ${action.toUpperCase()}: ${user.fullname}`);
 
-    // Tell the Arduino's LCD who just scanned. Format: "name|status",
-    // matched by displayResult() in the sketch, which splits on '|'
-    // and truncates each half to fit the 16-column LCD1602.
-    const status = action === 'checkin' ? 'CHECKED IN' : 'CHECKED OUT';
-    exports.sendToArduino(`${user.fullname}|${status}`);
+    // Two-stage LCD display per spec: "WELCOME / <name>" immediately,
+    // then "TIME IN / SUCCESS" (or the checkout equivalent) after a
+    // short pause, using the SAME "line1|line2" wire format the sketch
+    // already parses on every write — nothing about the protocol itself
+    // changes, just what gets sent and when. See utils/scanMessages.js
+    // for the exact copy and the note on why buzzer codes aren't sent.
+    const msg = getScanMessage(action === 'checkin' ? 'success_checkin' : 'success_checkout');
+    exports.sendToArduino(`${msg.lcdLine1}|${truncateForLcd(user.fullname)}`);
+    setTimeout(() => {
+      exports.sendToArduino(`${msg.lcdStage2.lcdLine1}|${msg.lcdStage2.lcdLine2}`);
+    }, LCD_STAGE_DELAY_MS);
   } catch (err) {
-    // processScan already emits admin rfid:error events for the
-    // "card not found" / "no subscription" cases; this just logs.
+    // processScan already emits admin rfid:error events for every
+    // rejection case; this just logs and drives the LCD.
     console.warn(`[RFID] Scan rejected for ${uid}: ${err.message}`);
 
-    // Still show something on the LCD so whoever's standing at the
-    // reader isn't left staring at "Reading card..." forever.
-    exports.sendToArduino(`Access Denied|${shortReason(err)}`);
+    // Distinct line1/line2 per errorType (unknown card, expired
+    // subscription, deactivated account, etc.) rather than a single
+    // "Access Denied|<reason>" for every case — matches the specific
+    // wording the spec calls for per scenario, so the LCD and the
+    // admin UI never disagree about why a scan was rejected.
+    const msg = getScanMessage(err.errorType);
+    exports.sendToArduino(`${msg.lcdLine1}|${msg.lcdLine2}`);
   }
 }
 
-// Maps a processScan() rejection into a short, LCD-friendly reason.
-// err.errorType comes from attendanceService's httpError() helper.
-function shortReason(err) {
-  switch (err.errorType) {
-    case 'card_invalid':
-      return 'Unknown card';
-    case 'no_subscription':
-      return 'No membership';
-    case 'subscription_expired':
-      return 'Membership expired';
-    case 'subscription_inactive':
-      return 'Membership inactive';
-    case 'member_inactive':
-      return 'Account disabled';
-    case 'employee_inactive':
-      return 'Account disabled';
-    case 'duplicate_scan':
-      return 'Wait a moment';
-    case 'invalid_format':
-      return 'Read error';
-    default:
-      return 'Try again';
-  }
+// A 16x2 LCD only has 16 columns per line — this mirrors the sketch's own
+// truncation (per the comment above) so a very long name doesn't just get
+// cut off mid-character by the display; it's clipped consistently here too.
+function truncateForLcd(text, maxLength = 16) {
+  if (!text) return '';
+  return text.length > maxLength ? text.slice(0, maxLength) : text;
 }
 
 // ============================================================================
@@ -475,10 +485,24 @@ exports.sendToArduino = (message) => {
 // Set to true while the Bind RFID Card modal (EditMember.vue) or the
 // Register New Card page (AdminrfidRegistration.vue) is open. See the
 // `registrationMode` comment above for why this changes scan handling.
-
+//
+// Also tells the Arduino's LCD idle screen to match, via the sketch's
+// MODE: command (see sketch_aug7d.ino's handleModeCommand) — e.g.
+// "REGISTER MODE / Tap new card" instead of the normal "Gym Attendance /
+// Tap your card". This is a *persistent* idle-screen change, distinct
+// from the temporary scan-result messages sent elsewhere in this file
+// (those auto-revert after ~4s back to whatever MODE is currently set).
+//
+// The sketch also supports a separate MODE:BIND, but the backend only
+// tracks a single registrationMode boolean shared by both the "Bind RFID
+// Card" modal and the "Register New Card" page — so both map to
+// MODE:REGISTER here. Splitting that into two distinct modes would need
+// setRegistrationMode to take a mode name instead of a boolean; not done
+// here since nothing currently calls it with that distinction in mind.
 exports.setRegistrationMode = (enabled) => {
   registrationMode = !!enabled;
   console.log(`[RFID] Registration mode ${registrationMode ? 'ON' : 'OFF'}`);
+  exports.sendToArduino(`MODE:${registrationMode ? 'REGISTER' : 'ATTENDANCE'}`);
 };
 
 // ============================================================================
