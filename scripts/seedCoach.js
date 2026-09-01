@@ -11,13 +11,13 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 
 // Adjust these before running:
-const COACH = {
-  fullname: 'John Russel Orias',
-  email: 'johnrusselorias@gmail.com',
-  password: 'changeme123', // gets bcrypt-hashed automatically
-  role: 'coach',
-  isActive: true,
-};
+// const COACH = {
+//   fullname: 'John Russel Orias',
+//   email: 'johnrusselorias@gmail.com',
+//   password: 'changeme123', // gets bcrypt-hashed automatically
+//   role: 'coach',
+//   isActive: true,
+// };
 
 async function run() {
   // If your config/db.js exports a connectDB() helper, prefer that

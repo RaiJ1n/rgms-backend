@@ -122,6 +122,7 @@ exports.listCards = async (req, res, next) => {
 };
 
 const attendanceService = require('../services/attendanceService');
+const { getScanMessage } = require('../utils/scanMessages');
 
 exports.scanCard = async (req, res, next) => {
   try {
@@ -130,14 +131,30 @@ exports.scanCard = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'cardId is required' });
     }
 
-    const { action, attendance } = await attendanceService.processScan(cardId);
-    const message = action === 'checkin' ? 'Checked in' : 'Checked out';
+    const { action, attendance, user } = await attendanceService.processScan(cardId);
 
-    res.json({ success: true, message, data: attendance });
+    // Same message map the Arduino LCD reads from (utils/scanMessages.js)
+    // — this REST fallback (used when no serial device is connected, or
+    // by any other client that hits /rfid/scan directly) says exactly
+    // the same thing a member would see on the physical reader.
+    const msg = getScanMessage(action === 'checkin' ? 'success_checkin' : 'success_checkout');
+    const eventTime = (action === 'checkin' ? attendance.checkIn : attendance.checkOut) || new Date();
+
+    res.json({
+      success: true,
+      message: msg.title,
+      detail: msg.body(user.fullname, eventTime.toLocaleTimeString()),
+      data: attendance,
+    });
   } catch (err) {
     // errors thrown by processScan already carry statusCode + a clean message
     if (err.statusCode) {
-      return res.status(err.statusCode).json({ success: false, message: err.message });
+      const msg = getScanMessage(err.errorType);
+      return res.status(err.statusCode).json({
+        success: false,
+        message: msg.title,
+        detail: msg.body,
+      });
     }
     next(err);
   }

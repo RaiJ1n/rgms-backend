@@ -62,7 +62,7 @@ const User = require('../models/User');
   });
 
   console.log(`Created first admin account: ${admin.fullname} <${admin.email}>`);
-  console.log('Log in at /admin/login. Create any further admins from Admin Settings.');
+  console.log('Log in at Public signup. Create any further admins from Admin Settings.');
 
   await mongoose.connection.close();
   console.log('Done.');

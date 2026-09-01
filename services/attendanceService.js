@@ -5,6 +5,7 @@ const Subscription = require('../models/Subscription');
 const Coach = require('../models/Coach');
 const AuditLog = require('../models/AuditLog');
 const socketUtil = require('../utils/socket');
+const { getScanMessage } = require('../utils/scanMessages');
 
 const httpError = (message, statusCode, errorType) => {
   const err = new Error(message);
@@ -12,6 +13,21 @@ const httpError = (message, statusCode, errorType) => {
   err.errorType = errorType; // lets callers distinguish cases if needed
   return err;
 };
+
+// Emits the standard rfid:error admin event for a given errorType, pulling
+// title/body wording from the shared message map (utils/scanMessages.js)
+// instead of a one-off string per call site — keeps this event's `message`
+// field consistent with what the LCD and REST response say for the same
+// errorType.
+function emitScanError(errorType, extra) {
+  const msg = getScanMessage(errorType);
+  socketUtil.emitToAdmins('rfid:error', {
+    title: msg.title,
+    message: msg.body,
+    timestamp: new Date(),
+    ...extra,
+  });
+}
 
 /**
  * Single source of truth for "what happens when a card is scanned."
@@ -28,13 +44,21 @@ async function processScan(cardId) {
   }
 
   const card = await RFIDCard.findOne({ cardId: uid }).populate('userId').populate('coachId');
-  if (!card || !card.active) {
-    socketUtil.emitToAdmins('rfid:error', {
-      uid,
-      message: 'Card not found or inactive',
-      timestamp: new Date(),
-    });
-    throw httpError('Card not found or inactive', 404, 'card_invalid');
+
+  // Split into two distinct cases (previously both collapsed into
+  // 'card_invalid'): a UID that was never registered at all needs a
+  // "please register this card" message, while a UID that *is*
+  // registered but was deactivated by an admin needs an "access denied"
+  // message — conflating them meant an unregistered card and a
+  // deliberately-disabled one looked identical to whoever was standing
+  // at the reader.
+  if (!card) {
+    emitScanError('card_unregistered', { uid });
+    throw httpError('Card not found', 404, 'card_unregistered');
+  }
+  if (!card.active) {
+    emitScanError('card_deactivated', { uid });
+    throw httpError('Card is deactivated', 403, 'card_deactivated');
   }
 
   const now = new Date();
@@ -56,7 +80,7 @@ async function processScan(cardId) {
 
   // A card that's active but bound to neither — shouldn't be reachable
   // given registerCard's validation, but fail closed rather than assume.
-  throw httpError('Card is not linked to a member or employee', 404, 'card_invalid');
+  throw httpError('Card is not linked to a member or employee', 404, 'card_unregistered');
 }
 
 // ---------------------------------------------------------------------------
@@ -70,12 +94,10 @@ async function processEmployeeScan(card, now) {
   const coach = card.coachId;
 
   if (!coach.isActive) {
-    socketUtil.emitToAdmins('rfid:error', {
+    emitScanError('employee_inactive', {
       uid: card.cardId,
       coachId: coach._id,
       fullname: coach.fullname,
-      message: 'This coach account has been deactivated',
-      timestamp: now,
     });
     throw httpError('This coach account has been deactivated', 403, 'employee_inactive');
   }
@@ -151,12 +173,10 @@ async function processMemberScan(card, now) {
   // still-active card and a still-valid subscription record could
   // previously check in.
   if (!user.isActive) {
-    socketUtil.emitToAdmins('rfid:error', {
+    emitScanError('member_inactive', {
       uid: card.cardId,
       userId: user._id,
       fullname: user.fullname,
-      message: 'This member account has been deactivated',
-      timestamp: now,
     });
     throw httpError('This member account has been deactivated', 403, 'member_inactive');
   }
@@ -169,36 +189,32 @@ async function processMemberScan(card, now) {
   const subscription = await Subscription.findOne({ userId: user._id }).sort({ endDate: -1 });
 
   if (!subscription) {
-    socketUtil.emitToAdmins('rfid:error', {
-      uid: card.cardId,
-      userId: user._id,
-      fullname: user.fullname,
-      message: 'This member has no subscription on file',
-      timestamp: now,
-    });
+    emitScanError('no_subscription', { uid: card.cardId, userId: user._id, fullname: user.fullname });
     throw httpError('No subscription on file', 403, 'no_subscription');
   }
 
-  if (subscription.status !== 'active') {
-    socketUtil.emitToAdmins('rfid:error', {
-      uid: card.cardId,
-      userId: user._id,
-      fullname: user.fullname,
-      message: 'This member\'s membership is marked inactive',
-      timestamp: now,
-    });
-    throw httpError('Membership is inactive', 403, 'subscription_inactive');
-  }
-
+  // Date is checked BEFORE the status field on purpose: `status` can be
+  // set to 'expired' explicitly (e.g. by a background job) as well as
+  // implied by endDate having passed while status still reads 'active'
+  // (e.g. the job hasn't run yet). Checking status first would have
+  // classified the first case as generic "inactive" rather than
+  // "expired", even though the subscription document literally says
+  // expired — the two scenarios need to stay distinguishable for the
+  // LCD/frontend messaging (see utils/scanMessages.js), so the
+  // authoritative signal (the date) is checked first.
   if (subscription.endDate < now) {
-    socketUtil.emitToAdmins('rfid:error', {
+    emitScanError('subscription_expired', {
       uid: card.cardId,
       userId: user._id,
       fullname: user.fullname,
-      message: `This member's subscription expired on ${subscription.endDate.toLocaleDateString()}`,
-      timestamp: now,
+      expiredOn: subscription.endDate,
     });
     throw httpError('Subscription expired', 403, 'subscription_expired');
+  }
+
+  if (subscription.status !== 'active') {
+    emitScanError('subscription_inactive', { uid: card.cardId, userId: user._id, fullname: user.fullname });
+    throw httpError('Membership is inactive', 403, 'subscription_inactive');
   }
 
   card.lastScannedAt = now;
