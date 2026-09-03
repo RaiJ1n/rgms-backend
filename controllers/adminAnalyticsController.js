@@ -62,9 +62,14 @@ exports.summary = async (req, res, next) => {
     const everActiveUserIds = await Subscription.distinct('userId', { status: 'active', endDate: { $lt: now } });
     const expiredCount = everActiveUserIds.filter((id) => !activeUserIdSet.has(id.toString())).length;
 
-    // Daily RFID attendance (today)
-    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-    const todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
+    // Section D3's fix (see utils/localDate.js) applied here too — this
+    // was still using raw new Date()/setHours(), the same server-
+    // timezone bug already found and fixed in attendanceService.js and
+    // rfidController.todayAttendance. Same failure mode: a UTC-
+    // configured server would misbucket late-night Manila attendance
+    // into the wrong day for this stat specifically.
+    const todayStart = startOfLocalDay();
+    const todayEnd = endOfLocalDay();
     const dailyAttendance = await Attendance.countDocuments({ createdAt: { $gte: todayStart, $lte: todayEnd } });
 
     // Most popular plan
