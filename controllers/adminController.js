@@ -82,6 +82,11 @@ const getMembers = async (req, res, next) => {
         mobile: u.phone,
         address: u.address,
         plan: sub?.planId?.name || null,
+        // Section C3: spec's export requires Subscription Start/Expiration
+        // Date as separate columns from "Date Joined" (account creation) —
+        // already fetched above for deriveStatus, just wasn't surfaced here.
+        subscriptionStart: sub?.startDate || null,
+        subscriptionExpiration: sub?.endDate || null,
         status: deriveStatus(sub),
         accountActive: u.isActive,
         studentPromoActive: u.studentPromoActive,
@@ -437,6 +442,11 @@ const exportPaymentsXLSX = async (req, res, next) => {
 
     const { startDate, endDate, search, method, status } = req.query;
 
+    // Spec: "Start date cannot be later than end date."
+    if (new Date(startDate) > new Date(endDate)) {
+      return res.status(400).json({ success: false, message: 'Start date cannot be later than end date.' });
+    }
+
     const filter = {
       createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
     };
@@ -456,6 +466,15 @@ const exportPaymentsXLSX = async (req, res, next) => {
       .populate('userId', 'fullname email')
       .populate('planId', 'name')
       .sort({ createdAt: 1 });
+
+    // Spec: "Handle empty date ranges gracefully. Display an appropriate
+    // message if no records exist." A 200 with an empty XLSX attachment
+    // gives the browser a file to save with no indication anything was
+    // wrong — this returns a normal JSON error instead, which the
+    // frontend can show as a message rather than downloading a blank file.
+    if (payments.length === 0) {
+      return res.status(404).json({ success: false, message: 'No payment records found for the selected range and filters.' });
+    }
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Payments');
