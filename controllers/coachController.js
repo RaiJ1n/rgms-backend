@@ -95,6 +95,11 @@ const createCoach = async (req, res, next) => {
       specialization,
       role: 'coach',
       isVerified: true, // admin-created, same as createMember — no self-serve verification step
+      // Explicit rather than relying on the schema default alone — see
+      // isDisplayed's comment in User.js. New coaches are visible to
+      // clients right away; an admin can hide this one afterward via
+      // setCoachVisibility if needed.
+      isDisplayed: true,
       createdBy: req.user._id,
     });
 

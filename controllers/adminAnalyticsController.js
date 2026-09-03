@@ -4,6 +4,7 @@ const Subscription = require('../models/Subscription');
 const MembershipPlan = require('../models/MembershipPlan');
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
+const { startOfLocalDay, endOfLocalDay, startOfLocalWeek, startOfLocalMonth, startOfLocalYear } = require('../utils/localDate');
 
 // Helper to parse date range
 function parseRange(q) {
@@ -108,6 +109,49 @@ exports.summary = async (req, res, next) => {
       topPlans,
     });
   } catch (err) { next(err); }
+};
+
+// C1 — Income Period Selector. Distinct from `summary` above: that one
+// is always "today" for the stat-card grid; this drives the period
+// toggle specifically, using Manila-local boundaries (never the
+// server's own timezone — see utils/localDate.js) and only counting
+// approved payments, same as every other revenue aggregation in this
+// file.
+const PERIOD_LABELS = {
+  today: "Today's Income",
+  weekly: 'Weekly Income',
+  monthly: 'Monthly Income',
+  yearly: 'Yearly Income',
+};
+
+exports.incomeByPeriod = async (req, res, next) => {
+  try {
+    const period = ['today', 'weekly', 'monthly', 'yearly'].includes(req.query.period)
+      ? req.query.period
+      : 'today';
+
+    const now = new Date();
+    let start;
+    if (period === 'weekly') start = startOfLocalWeek(now);
+    else if (period === 'monthly') start = startOfLocalMonth(now);
+    else if (period === 'yearly') start = startOfLocalYear(now);
+    else start = startOfLocalDay(now);
+    const end = endOfLocalDay(now);
+
+    const result = await Payment.aggregate([
+      { $match: { status: 'approved', createdAt: { $gte: start, $lte: end } } },
+      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]);
+
+    res.json({
+      period,
+      label: PERIOD_LABELS[period],
+      total: result[0] ? result[0].total : 0,
+      count: result[0] ? result[0].count : 0,
+    });
+  } catch (err) {
+    next(err);
+  }
 };
 
 // Sales by custom range grouped by day

@@ -10,7 +10,14 @@ const register = async (req, res, next) => {
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
     const { fullname, email, password, phone, address } = req.body;
-    const { user, token } = await authService.registerUser({ fullname, email, password, phone, address });
+    const { user, token } = await authService.registerUser({
+      fullname,
+      email,
+      password,
+      phone,
+      address,
+      privacyNoticeAcknowledged: true, // validator above already rejected anything but true
+    });
 
     emailService.sendWelcomeEmail(user).catch((err) =>
       console.error('Failed to send welcome email:', err.message)
@@ -55,8 +62,19 @@ const login = async (req, res, next) => {
   }
 };
 
-const logout = async (req, res) => {
-  res.json({ success: true, message: 'Logout successful' });
+// NOTE: this route must run behind the `protect` middleware (see
+// routes/authRoutes.js) so req.user is populated — that's how we know
+// whose tokenVersion to bump. Logout that doesn't require a valid
+// token can't invalidate one.
+const logout = async (req, res, next) => {
+  try {
+    if (req.user) {
+      await authService.logoutUser(req.user._id);
+    }
+    res.json({ success: true, message: 'Logout successful' });
+  } catch (error) {
+    next(error);
+  }
 };
 
 const forgotPassword = async (req, res, next) => {
@@ -105,7 +123,7 @@ const resetPassword = async (req, res, next) => {
 
     const { email, otp, password } = req.body;
     const user = await authService.resetPassword({ email, otp, password });
-    const authToken = generateToken({ id: user._id });
+    const authToken = generateToken({ id: user._id, tokenVersion: user.tokenVersion || 0 });
     res.json({ success: true, message: 'Password reset successful', data: { token: authToken } });
   } catch (error) {
     if (error.message === 'Invalid or expired code') {

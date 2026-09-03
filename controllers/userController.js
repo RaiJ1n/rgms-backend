@@ -7,6 +7,31 @@ const Subscription = require('../models/Subscription');
 const authService = require('../services/authService');
 const emailService = require('../services/emailService');
 
+// Section D1: standalone acknowledge endpoint, for gated actions that
+// don't have a convenient body field of their own to carry the flag on
+// (student ID upload's file field is the whole request; the coach
+// registration questionnaire is a separate controller entirely). The
+// frontend calls this first, then retries the original action —
+// updateProfile/uploadProfilePhoto/uploadMedicalDocument above also
+// accept the flag inline in the same request as a shortcut, but this
+// endpoint is what actually flips the bit in all cases.
+const acknowledgePrivacyNotice = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id).select('-password');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (!user.privacyNoticeAcknowledged) {
+      user.privacyNoticeAcknowledged = true;
+      user.privacyNoticeAcknowledgedAt = new Date();
+      await user.save();
+    }
+
+    res.json({ success: true, data: user });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const getProfile = async (req, res, next) => {
   try {
     res.json({ success: true, data: req.user });
@@ -32,14 +57,47 @@ const updateProfile = async (req, res, next) => {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const { fullname, email, age, heightCm, weightKg, address, phone, birthDate, facebookUrl, instagramUrl,
-      medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes, medicalConsent } = req.body;
+    const { fullname, email, age, heightCm, weightKg, sex, calorieGoal, address, phone, birthDate, facebookUrl, instagramUrl,
+      medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes, medicalConsent,
+      privacyNoticeAcknowledged } = req.body;
 
     user.fullname = fullname;
+
+    // Section D1: phone/address are the "personal information" fields
+    // this page can change post-signup. Same accept-in-this-request-
+    // or-already-acknowledged pattern as medicalConsent below, and the
+    // same "reject the whole request rather than silently drop these
+    // two fields" reasoning — a member shouldn't see their phone/address
+    // save look successful when it was actually skipped.
+    // Section D1: compares against the STORED value, not just whether
+    // the field is present in the request — the frontend's
+    // buildProfilePayload() sends address/phone on every save
+    // regardless of whether they changed, so a presence-only check here
+    // would gate every single profile update (even just editing
+    // fullname) behind the privacy notice, not only ones that actually
+    // touch contact info.
+    const contactFieldsTouched =
+      (address !== undefined && address !== user.address) || (phone !== undefined && phone !== user.phone);
+    if (contactFieldsTouched && !user.privacyNoticeAcknowledged && !privacyNoticeAcknowledged) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please acknowledge the Privacy Notice before saving this information.',
+      });
+    }
+    if (!user.privacyNoticeAcknowledged && privacyNoticeAcknowledged) {
+      user.privacyNoticeAcknowledged = true;
+      user.privacyNoticeAcknowledgedAt = new Date();
+    }
+
     if (address !== undefined) user.address = address;
     if (age !== undefined) user.age = age;
     if (heightCm !== undefined) user.heightCm = heightCm;
     if (weightKg !== undefined) user.weightKg = weightKg;
+    // Section D2: needed for the Mifflin-St Jeor calorie calculation.
+    // checkFalsy in the route validator lets an empty string clear it
+    // back to unset, same convention as facebookUrl/instagramUrl below.
+    if (sex !== undefined) user.sex = sex || undefined;
+    if (calorieGoal !== undefined) user.calorieGoal = calorieGoal;
     if (phone !== undefined) user.phone = phone;
     // Empty string clears the link (used by the "Disconnect" action on the
     // frontend); a non-empty value is already URL-validated by the route.
@@ -120,6 +178,20 @@ const uploadProfilePhoto = async (req, res, next) => {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
+    // Section D1: multer parses non-file form fields into req.body same
+    // as a JSON request — 'true'/'false' arrive as strings here since
+    // this is multipart/form-data, not JSON, hence the explicit === check.
+    if (!user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged !== 'true') {
+      return res.status(400).json({
+        success: false,
+        message: 'Please acknowledge the Privacy Notice before uploading a photo.',
+      });
+    }
+    if (!user.privacyNoticeAcknowledged) {
+      user.privacyNoticeAcknowledged = true;
+      user.privacyNoticeAcknowledgedAt = new Date();
+    }
+
     const oldPublicId = user.photo?.public_id;
     user.photo = { url: req.file.path, public_id: req.file.filename };
     await user.save();
@@ -155,6 +227,24 @@ const uploadMedicalDocument = async (req, res, next) => {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
+    // Section D1: this endpoint had no consent gate at all before —
+    // noted as a gap during the C4 fix (document upload wasn't behind
+    // the same medicalConsentGiven check as the free-text medical
+    // fields). Using the broader privacy notice flag here rather than
+    // medicalConsentGiven since D1 is meant to cover this specific case
+    // by name ("medical document upload") separately from that
+    // narrower, already-existing consent.
+    if (!user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged !== 'true') {
+      return res.status(400).json({
+        success: false,
+        message: 'Please acknowledge the Privacy Notice before uploading a medical document.',
+      });
+    }
+    if (!user.privacyNoticeAcknowledged) {
+      user.privacyNoticeAcknowledged = true;
+      user.privacyNoticeAcknowledgedAt = new Date();
+    }
+
     const oldDocument = user.medicalDocument?.public_id ? { ...user.medicalDocument.toObject?.() ?? user.medicalDocument } : null;
 
     user.medicalDocument = {
@@ -179,39 +269,49 @@ const uploadMedicalDocument = async (req, res, next) => {
   }
 };
 
+// Shared by the self-service view below and adminController.getMemberMedicalDocument
+// — same "mint a fresh signed URL, never persist/hand out a raw one"
+// approach for both, just called with a different owner's document.
+// Takes the medicalDocument sub-document (or null) and returns the
+// { url, fileName, fileType, uploadedAt } shape both callers respond
+// with, or null if there's nothing on file.
+function buildMedicalDocumentResponse(medicalDocument) {
+  if (!medicalDocument?.public_id) return null;
+
+  const { public_id: publicId, resourceType, fileName, fileType, uploadedAt } = medicalDocument;
+
+  const signedUrl = cloudinary.url(publicId, {
+    resource_type: resourceType || 'image',
+    type: 'authenticated',
+    sign_url: true,
+    secure: true,
+    // NOTE: sign_url alone does not make this link expire — it just
+    // proves the URL was generated by someone holding the API secret,
+    // which is what keeps `authenticated`-type assets from being
+    // guessable/publicly listable. The URL is still valid indefinitely
+    // once generated. If time-boxed links are needed later, enable
+    // Cloudinary's "strict token authentication" and switch this to an
+    // auth_token with a `start_time`/`duration` instead.
+  });
+
+  return { url: signedUrl, fileName, fileType, uploadedAt };
+}
+
 // Returns a short-lived signed URL rather than ever persisting/handing out
 // a directly-usable link — see the comment on medicalDocument in User.js
-// and on medicalDocumentStorage in uploadMiddleware.js. Owner-only for now;
-// if staff need read access later, extend the check below (e.g. req.user.role
-// === 'admin' or a coach assigned to this member) rather than relaxing it
-// on the frontend.
+// and on medicalDocumentStorage in uploadMiddleware.js. Owner-only here;
+// staff access goes through adminController.getMemberMedicalDocument
+// instead, which reuses buildMedicalDocumentResponse above rather than
+// this route being relaxed to accept an arbitrary id.
 const viewMedicalDocument = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id).select('medicalDocument');
-    if (!user?.medicalDocument?.public_id) {
+    const result = buildMedicalDocumentResponse(user?.medicalDocument);
+    if (!result) {
       return res.status(404).json({ success: false, message: 'No medical document on file.' });
     }
 
-    const { public_id: publicId, resourceType, fileName, fileType, uploadedAt } = user.medicalDocument;
-
-    const signedUrl = cloudinary.url(publicId, {
-      resource_type: resourceType || 'image',
-      type: 'authenticated',
-      sign_url: true,
-      secure: true,
-      // NOTE: sign_url alone does not make this link expire — it just
-      // proves the URL was generated by someone holding the API secret,
-      // which is what keeps `authenticated`-type assets from being
-      // guessable/publicly listable. The URL is still valid indefinitely
-      // once generated. If time-boxed links are needed later, enable
-      // Cloudinary's "strict token authentication" and switch this to an
-      // auth_token with a `start_time`/`duration` instead.
-    });
-
-    res.json({
-      success: true,
-      data: { url: signedUrl, fileName, fileType, uploadedAt },
-    });
+    res.json({ success: true, data: result });
   } catch (error) {
     next(error);
   }
@@ -397,6 +497,7 @@ const getDashboardSummary = async (req, res, next) => {
 
 module.exports = {
   getProfile,
+  acknowledgePrivacyNotice,
   updateProfile,
   uploadProfilePhoto,
   uploadMedicalDocument,
@@ -406,4 +507,5 @@ module.exports = {
   changePassword,
   getSubscriptions,
   getDashboardSummary,
+  buildMedicalDocumentResponse,
 };

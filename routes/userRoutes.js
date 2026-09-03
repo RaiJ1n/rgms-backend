@@ -1,6 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const userController = require('../controllers/userController');
+const workoutPlanController = require('../controllers/workoutPlanController');
 const { protect } = require('../middleware/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
 
@@ -8,6 +9,7 @@ const router = express.Router();
 
 router.use(protect);
 router.get('/profile', userController.getProfile);
+router.put('/privacy-notice/acknowledge', userController.acknowledgePrivacyNotice);
 router.put(
   '/profile',
   [
@@ -16,6 +18,13 @@ router.put(
     body('age').optional().isInt({ min: 0, max: 120 }).withMessage('Enter a valid age'),
     body('heightCm').optional().isFloat({ min: 0 }).withMessage('Enter a valid height'),
     body('weightKg').optional().isFloat({ min: 0 }).withMessage('Enter a valid weight'),
+    // Section D2: sex already existed on User.js but was coach-only in
+    // practice — nothing on the member-facing side ever collected it.
+    // The calorie calculator needs it (Mifflin-St Jeor requires sex;
+    // calculating without it when the formula needs it isn't allowed
+    // per spec), so it's now settable here too.
+    body('sex').optional({ checkFalsy: true }).isIn(['Male', 'Female', 'Other']).withMessage('Invalid sex value'),
+    body('calorieGoal').optional({ nullable: true }).isFloat({ min: 0 }).withMessage('Enter a valid calorie goal'),
     body('address').optional().isString().trim(),
     // checkFalsy: true lets an empty string through validation-free — that's
     // how "Disconnect" clears the link. Anything non-empty must be a real URL.
@@ -38,6 +47,7 @@ router.put(
     body('emergencyContactPhone').optional({ checkFalsy: true }).isString().trim().isLength({ max: 50 }),
     body('medicalNotes').optional({ checkFalsy: true }).isString().trim().isLength({ max: 1000 }),
     body('medicalConsent').optional().isBoolean(),
+    body('privacyNoticeAcknowledged').optional().isBoolean(),
   ],
   userController.updateProfile
 );
@@ -79,5 +89,22 @@ router.put(
 );
 router.get('/subscriptions', userController.getSubscriptions);
 router.get('/dashboard-summary', userController.getDashboardSummary);
+
+// ---- Assigned workout plans (member side of Sections E4/E5) ----
+// getMyAssignedPlans/getMyAssignedPlanDetail are scoped to
+// { assignedTo: req.user._id } inside the controller — a member can
+// only ever see plans their own coach actually assigned to them.
+router.get('/workout-plans', workoutPlanController.getMyAssignedPlans);
+router.get('/workout-plans/:id', workoutPlanController.getMyAssignedPlanDetail);
+router.put(
+  '/workout-plans/:id/progress',
+  [
+    body('componentId').isMongoId().withMessage('Invalid exercise'),
+    body('completedSets').isArray().withMessage('completedSets must be a list'),
+    body('completedSets.*').isInt({ min: 1 }).withMessage('Invalid set number'),
+    body('notes').optional().isString().trim().isLength({ max: 500 }),
+  ],
+  workoutPlanController.updateProgress
+);
 
 module.exports = router;

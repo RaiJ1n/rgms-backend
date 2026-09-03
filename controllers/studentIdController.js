@@ -1,10 +1,29 @@
 const StudentVerification = require('../models/StudentVerification');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
 const socketUtil = require('../utils/socket');
 
 const submit = async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, message: 'ID photo is required' });
+
+    // Section D1: an ID photo is exactly the kind of sensitive document
+    // this notice is meant to cover. req.user here is the version
+    // authMiddleware fetched at the start of the request, so it may not
+    // reflect an acknowledgment made moments earlier in the same
+    // session — re-fetch rather than trust the stale copy.
+    const user = await User.findById(req.user._id).select('privacyNoticeAcknowledged');
+    if (!user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged !== 'true') {
+      return res.status(400).json({
+        success: false,
+        message: 'Please acknowledge the Privacy Notice before uploading your ID.',
+      });
+    }
+    if (!user.privacyNoticeAcknowledged) {
+      user.privacyNoticeAcknowledged = true;
+      user.privacyNoticeAcknowledgedAt = new Date();
+      await user.save();
+    }
 
     const existingPending = await StudentVerification.findOne({ userId: req.user._id, status: 'pending' });
     if (existingPending) {

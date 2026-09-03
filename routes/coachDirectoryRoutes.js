@@ -26,7 +26,10 @@ router.get('/', coachDirectoryController.getDisplayedCoaches);
 router.get('/:id', coachDirectoryController.getDisplayedCoach);
 router.post(
   '/:id/register',
-  [body('answers').optional().isArray().withMessage('Answers must be a list')],
+  [
+    body('answers').optional().isArray().withMessage('Answers must be a list'),
+    body('privacyNoticeAcknowledged').optional().isBoolean(),
+  ],
   coachDirectoryController.registerToCoach
 );
 

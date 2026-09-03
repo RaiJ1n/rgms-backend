@@ -6,6 +6,7 @@ const Coach = require('../models/Coach');
 const AuditLog = require('../models/AuditLog');
 const socketUtil = require('../utils/socket');
 const { getScanMessage } = require('../utils/scanMessages');
+const { startOfLocalDay } = require('../utils/localDate');
 
 const httpError = (message, statusCode, errorType) => {
   const err = new Error(message);
@@ -105,8 +106,7 @@ async function processEmployeeScan(card, now) {
   card.lastScannedAt = now;
   await card.save();
 
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
+  const startOfDay = startOfLocalDay(now);
 
   let attendance = await Attendance.findOne({
     coachId: coach._id,
@@ -121,6 +121,26 @@ async function processEmployeeScan(card, now) {
     await attendance.save();
     action = 'checkout';
   } else {
+    // One-Tap-Per-Day: an employee who already completed a full check-in/
+    // check-out cycle today gets no second cycle, even after the 10s
+    // cooldown has passed. Without this, nothing stopped repeated in/out
+    // taps from logging unlimited attendance pairs in a single day.
+    const alreadyCompletedToday = await Attendance.findOne({
+      coachId: coach._id,
+      subjectType: 'employee',
+      createdAt: { $gte: startOfDay },
+      checkOut: { $exists: true },
+    });
+
+    if (alreadyCompletedToday) {
+      emitScanError('daily_attendance_completed', {
+        uid: card.cardId,
+        coachId: coach._id,
+        fullname: coach.fullname,
+      });
+      throw httpError('Attendance already completed for today', 403, 'daily_attendance_completed');
+    }
+
     attendance = await Attendance.create({
       coachId: coach._id,
       subjectType: 'employee',
@@ -221,8 +241,7 @@ async function processMemberScan(card, now) {
   await card.save();
 
   // Today's open session, from the DB — never from in-memory state
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
+  const startOfDay = startOfLocalDay(now);
 
   let attendance = await Attendance.findOne({
     userId: user._id,
@@ -236,6 +255,26 @@ async function processMemberScan(card, now) {
     await attendance.save();
     action = 'checkout';
   } else {
+    // One-Tap-Per-Day: a member who already completed a full check-in/
+    // check-out cycle today gets no second cycle, even after the 10s
+    // cooldown has passed. Without this, nothing stopped repeated in/out
+    // taps from logging unlimited attendance pairs in a single day.
+    const alreadyCompletedToday = await Attendance.findOne({
+      userId: user._id,
+      subjectType: 'member',
+      createdAt: { $gte: startOfDay },
+      checkOut: { $exists: true },
+    });
+
+    if (alreadyCompletedToday) {
+      emitScanError('daily_attendance_completed', {
+        uid: card.cardId,
+        userId: user._id,
+        fullname: user.fullname,
+      });
+      throw httpError('Attendance already completed for today', 403, 'daily_attendance_completed');
+    }
+
     attendance = await Attendance.create({
       userId: user._id,
       subjectType: 'member',

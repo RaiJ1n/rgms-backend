@@ -1,8 +1,11 @@
 const express = require('express');
 const { body } = require('express-validator');
 const coachPortalController = require('../controllers/coachPortalController');
+const exerciseController = require('../controllers/exerciseController');
+const workoutPlanController = require('../controllers/workoutPlanController');
 const { protectCoach } = require('../middleware/coachAuthMiddleware');
 const upload = require('../middleware/uploadMiddleware');
+const { MUSCLE_GROUPS } = require('../utils/muscleGroups');
 
 const router = express.Router();
 
@@ -38,5 +41,69 @@ router.get('/requests', coachPortalController.getMyRequests);
 router.put('/requests/:id/accept', coachPortalController.acceptRequest);
 router.put('/requests/:id/reject', coachPortalController.rejectRequest);
 router.get('/clients', coachPortalController.getMyClients);
+
+// ---- Exercise library (Section E3) — private per-coach ----
+router.get('/exercises', exerciseController.getMyExercises);
+router.post(
+  '/exercises',
+  [
+    body('name').notEmpty().withMessage('Exercise name is required'),
+    body('category').isIn(['Strength', 'Cardio', 'Flexibility', 'Balance', 'HIIT']).withMessage('Invalid category'),
+    body('description').optional().isString().trim(),
+    body('muscleGroups').optional().isArray().withMessage('muscleGroups must be a list'),
+    body('muscleGroups.*').optional().isIn(MUSCLE_GROUPS).withMessage('Invalid muscle group'),
+    body('defaultSets').isInt({ min: 1 }).withMessage('Sets must be a positive number'),
+    body('defaultReps').isInt({ min: 1 }).withMessage('Reps must be a positive number'),
+  ],
+  exerciseController.createExercise
+);
+router.put(
+  '/exercises/:id',
+  [
+    body('name').optional().notEmpty(),
+    body('category').optional().isIn(['Strength', 'Cardio', 'Flexibility', 'Balance', 'HIIT']),
+    body('description').optional().isString().trim(),
+    body('muscleGroups').optional().isArray(),
+    body('muscleGroups.*').optional().isIn(MUSCLE_GROUPS),
+    body('defaultSets').optional().isInt({ min: 1 }),
+    body('defaultReps').optional().isInt({ min: 1 }),
+  ],
+  exerciseController.updateExercise
+);
+router.delete('/exercises/:id', exerciseController.deleteExercise);
+
+// ---- Workout plans (Sections E4/E5) ----
+router.get('/workout-plans', workoutPlanController.getMyPlans);
+router.post(
+  '/workout-plans',
+  [
+    body('name').notEmpty().withMessage('Plan name is required'),
+    body('type').isIn(['Strength', 'Cardio', 'Flexibility', 'HIIT', 'Mixed']).withMessage('Invalid type'),
+    body('duration').notEmpty().withMessage('Duration is required'),
+    body('description').optional().isString().trim(),
+    body('components').optional().isArray(),
+    // Section E4: this only validates SHAPE (real Mongo ids). Whether
+    // each id is actually one of this coach's own accepted clients is
+    // enforced in workoutPlanController.assertAssignedToEligible, not
+    // here — that check needs a DB query the validator layer can't do.
+    body('assignedTo').optional().isArray(),
+    body('assignedTo.*').optional().isMongoId().withMessage('Invalid client selected'),
+  ],
+  workoutPlanController.createPlan
+);
+router.put(
+  '/workout-plans/:id',
+  [
+    body('name').optional().notEmpty(),
+    body('type').optional().isIn(['Strength', 'Cardio', 'Flexibility', 'HIIT', 'Mixed']),
+    body('duration').optional().notEmpty(),
+    body('description').optional().isString().trim(),
+    body('components').optional().isArray(),
+    body('assignedTo').optional().isArray(),
+    body('assignedTo.*').optional().isMongoId().withMessage('Invalid client selected'),
+  ],
+  workoutPlanController.updatePlan
+);
+router.delete('/workout-plans/:id', workoutPlanController.deletePlan);
 
 module.exports = router;

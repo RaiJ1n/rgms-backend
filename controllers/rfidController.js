@@ -123,6 +123,7 @@ exports.listCards = async (req, res, next) => {
 
 const attendanceService = require('../services/attendanceService');
 const { getScanMessage } = require('../utils/scanMessages');
+const { startOfLocalDay, endOfLocalDay, formatLocalDateLabel } = require('../utils/localDate');
 
 exports.scanCard = async (req, res, next) => {
   try {
@@ -206,12 +207,9 @@ exports.getLogs = async (req, res, next) => {
 
 exports.todayAttendance = async (req, res, next) => {
   try {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    
-    const end = new Date();
-    end.setHours(23, 59, 59, 999);
-    
+    const start = startOfLocalDay();
+    const end = endOfLocalDay();
+
     const logs = await Attendance.find({
       createdAt: { $gte: start, $lte: end },
     })
@@ -222,7 +220,7 @@ exports.todayAttendance = async (req, res, next) => {
     res.json({
       success: true,
       data: logs,
-      date: start.toISOString().split('T')[0],
+      date: formatLocalDateLabel(start),
       count: logs.length,
     });
   } catch (err) {
