@@ -35,6 +35,10 @@ const protectCoach = async (req, res, next) => {
       return res.status(403).json({ success: false, message: 'Coach account deactivated' });
     }
 
+    if ((decoded.tokenVersion || 0) !== (coach.tokenVersion || 0)) {
+      return res.status(401).json({ success: false, message: 'Session expired, please log in again' });
+    }
+
     req.coach = coach;
     next();
   } catch (error) {

@@ -33,6 +33,14 @@ const protect = async (req, res, next) => {
   const user = await User.findById(decoded.id).select('-password');
     if (!user) return res.status(401).json({ success: false, message: 'Not authorized, user not found' });
     if (!user.isActive) return res.status(403).json({ success: false, message: 'Account deactivated' });
+    // Tokens issued before this field existed carry no tokenVersion —
+    // treat that as 0 so already-logged-in users aren't kicked out the
+    // moment this ships. From here on, every new token carries the
+    // version it was minted with, and a logout/password-reset bumps
+    // the DB value, which is what actually invalidates it.
+    if ((decoded.tokenVersion || 0) !== (user.tokenVersion || 0)) {
+      return res.status(401).json({ success: false, message: 'Session expired, please log in again' });
+    }
     req.user = user;
     next();
     } catch (error) {

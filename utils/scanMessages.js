@@ -97,6 +97,13 @@ const SCAN_MESSAGES = {
     title: 'Scan Too Soon',
     body: 'Please wait a few seconds and scan again.',
   },
+  daily_attendance_completed: {
+    lcdLine1: 'ALREADY',
+    lcdLine2: 'CHECKED OUT',
+    buzzer: 'short_2',
+    title: 'Attendance Already Completed',
+    body: 'You have already completed your check-in and check-out for today.',
+  },
   invalid_format: {
     lcdLine1: 'READ ERROR',
     lcdLine2: 'TRY AGAIN',

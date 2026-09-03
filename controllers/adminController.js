@@ -14,6 +14,8 @@ const emailService = require('../services/emailService');
 const escapeRegex = require('../utils/escapeRegex');
 const { parsePagination } = require('../utils/paginate');
 const generateReceiptNumber = require('../utils/generateReceiptNumber');
+const ExcelJS = require('exceljs');
+const { buildMedicalDocumentResponse } = require('./userController');
 
 const getUsers = async (req, res) => {
   try {
@@ -78,6 +80,7 @@ const getMembers = async (req, res, next) => {
         name: u.fullname,
         email: u.email,
         mobile: u.phone,
+        address: u.address,
         plan: sub?.planId?.name || null,
         status: deriveStatus(sub),
         accountActive: u.isActive,
@@ -139,8 +142,44 @@ const getMember = async (req, res, next) => {
         emergencyContactPhone: user.emergencyContactPhone || '',
         medicalNotes: user.medicalNotes || '',
         medicalConsentGiven: user.medicalConsentGiven || false,
+        // Metadata only — same contract MedicalDocumentCard.vue already
+        // expects from the self-service profile endpoint. The signed,
+        // actually-openable URL is minted on demand by
+        // GET /admin/members/:id/medical-document below, not embedded
+        // here, so this response stays cheap even if nobody clicks View.
+        medicalDocument: user.medicalDocument?.public_id
+          ? {
+              fileName: user.medicalDocument.fileName,
+              fileType: user.medicalDocument.fileType,
+              uploadedAt: user.medicalDocument.uploadedAt,
+            }
+          : null,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Admin-only counterpart to userController.viewMedicalDocument — same
+// "mint a fresh signed URL, never persist/hand out a raw one" approach
+// (see buildMedicalDocumentResponse there), just scoped to the member
+// in the URL param instead of the requester's own account. This route
+// sits behind adminRoutes.js's blanket protect+admin, so reaching this
+// function at all already proves the requester is an authenticated
+// admin — the "authorized personnel, for program customization" case
+// the medicalDocument field's comment in User.js anticipates.
+const getMemberMedicalDocument = async (req, res, next) => {
+  try {
+    const user = await User.findOne({ _id: req.params.id, role: 'user' }).select('medicalDocument');
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    const result = buildMedicalDocumentResponse(user.medicalDocument);
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'No medical document on file for this member.' });
+    }
+
+    res.json({ success: true, data: result });
   } catch (error) {
     next(error);
   }
@@ -380,6 +419,88 @@ const getPayments = async (req, res, next) => {
       total,
       totalPages: isExport ? 1 : Math.ceil(total / limit),
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// C2 — Payment History Excel Export. Mirrors getPayments' own
+// search/method/status filtering exactly, so the export always matches
+// what the admin is currently looking at, plus a required date range.
+// Cash ("Walk-in") rows never have an external reference — the
+// system-generated transactionNumber is the receipt of record for
+// those; GCash keeps its member-provided referenceNumber.
+const exportPaymentsXLSX = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { startDate, endDate, search, method, status } = req.query;
+
+    const filter = {
+      createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
+    };
+    if (method && method !== 'All') filter.paymentMethod = method;
+    if (status && status !== 'All') filter.status = status;
+    if (search) {
+      const re = new RegExp(escapeRegex(search), 'i');
+      const matchingUsers = await User.find({ fullname: re }).select('_id');
+      filter.$or = [
+        { referenceNumber: re },
+        { transactionNumber: re },
+        { userId: { $in: matchingUsers.map((u) => u._id) } },
+      ];
+    }
+
+    const payments = await Payment.find(filter)
+      .populate('userId', 'fullname email')
+      .populate('planId', 'name')
+      .sort({ createdAt: 1 });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Payments');
+
+    sheet.columns = [
+      { header: 'Payment ID', key: 'paymentId', width: 26 },
+      { header: 'Member ID', key: 'memberId', width: 26 },
+      { header: 'Member Name', key: 'memberName', width: 24 },
+      { header: 'Amount', key: 'amount', width: 14 },
+      { header: 'Payment Date', key: 'paymentDate', width: 22 },
+      { header: 'Payment Method', key: 'paymentMethod', width: 16 },
+      { header: 'Membership Plan', key: 'plan', width: 20 },
+      { header: 'Approval Status', key: 'status', width: 16 },
+      { header: 'Receipt / Transaction Number', key: 'receiptNumber', width: 28 },
+    ];
+    sheet.getRow(1).font = { bold: true };
+
+    for (const p of payments) {
+      const receiptNumber = p.paymentMethod === 'Walk-in'
+        ? (p.transactionNumber || '—')
+        : (p.referenceNumber || p.transactionNumber || '—');
+
+      sheet.addRow({
+        paymentId: p._id.toString(),
+        memberId: p.userId?._id?.toString() || '',
+        memberName: p.userId?.fullname || '',
+        amount: p.amount,
+        paymentDate: p.createdAt.toISOString(),
+        paymentMethod: p.paymentMethod,
+        plan: p.planId?.name || '—',
+        status: p.status,
+        receiptNumber,
+      });
+    }
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="payment-history-${startDate}-to-${endDate}.xlsx"`
+    );
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (error) {
     next(error);
   }
@@ -690,6 +811,7 @@ module.exports = {
   getUsers,
   getMembers,
   getMember,
+  getMemberMedicalDocument,
   createMember,
   updateMember,
   setMemberStatus,
@@ -699,6 +821,7 @@ module.exports = {
   markNotificationRead,
   markAllNotificationsRead,
   getPayments,
+  exportPaymentsXLSX,
   createManualPayment,
   approvePayment,
   rejectPayment,

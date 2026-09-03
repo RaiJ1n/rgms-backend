@@ -70,6 +70,24 @@ const registerToCoach = async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
+    // Section D1: this submission goes to a COACH, not just gym staff —
+    // CoachQuestion.js's own comment gives "Do you have any allergies?"
+    // as an example question, so this route can carry health info to a
+    // third party. req.user is already the full document authMiddleware
+    // fetched for this request (minus password), so it can be saved
+    // directly — no extra query needed.
+    if (!req.user.privacyNoticeAcknowledged) {
+      if (!req.body.privacyNoticeAcknowledged) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please acknowledge the Privacy Notice before submitting your registration.',
+        });
+      }
+      req.user.privacyNoticeAcknowledged = true;
+      req.user.privacyNoticeAcknowledgedAt = new Date();
+      await req.user.save();
+    }
+
     const coach = await User.findOne({ _id: req.params.id, role: 'coach', isDisplayed: true });
     if (!coach) return res.status(404).json({ success: false, message: 'Coach not found or not currently available' });
 

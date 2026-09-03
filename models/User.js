@@ -19,6 +19,30 @@ const userSchema = new mongoose.Schema({
 
   isActive: { type: Boolean, default: true },
 
+  // Section D1: one-time, global Privacy Act acknowledgment — NOT the
+  // same as medicalConsentGiven below, which is a separate, narrower,
+  // per-category consent that already existed for the free-text medical
+  // fields specifically. This flag gates every OTHER sensitive
+  // submission point (signup, profile edits, medical document upload,
+  // coach registration questionnaire, student ID upload) and, once
+  // true, is never asked again — set at signup for new accounts, or via
+  // PUT /users/privacy-notice/acknowledge the first time an existing
+  // account (created before this field existed) hits any of those
+  // actions. Every gated controller checks this server-side; the
+  // frontend modal is not itself what enforces anything.
+  privacyNoticeAcknowledged: { type: Boolean, default: false },
+  privacyNoticeAcknowledgedAt: { type: Date },
+
+  // Bumped on every logout (and on password reset) so a JWT issued
+  // before that point stops being accepted, even though it hasn't
+  // expired yet. Every JWT carries the tokenVersion it was minted
+  // with (see generateToken calls in authService.js); authMiddleware
+  // and coachAuthMiddleware reject a token whose tokenVersion doesn't
+  // match the current value on the User document. Not touched on
+  // login — logging in re-uses whatever version is already current so
+  // a fresh login on another device/tab doesn't invalidate this one.
+  tokenVersion: { type: Number, default: 0 },
+
   // Coach-only fields. Only ever set/read when role === 'coach' — a
   // regular member/admin document just leaves these at their defaults.
   // Kept on User (not a separate collection) so that Coach accounts are
@@ -49,12 +73,14 @@ const userSchema = new mongoose.Schema({
   currentFitnessGoal: { type: String, trim: true },
   preferredExerciseTime: { type: String, trim: true },
   // Admin-controlled public visibility — whether this coach shows up on
-  // the Client/User "Coaches" page. Defaults to false (hidden) so a
-  // freshly admin-created coach account isn't publicly bookable before
-  // the admin has reviewed/decided to display it. Toggled only via
+  // the Client/User "Coaches" page. Defaults to true (visible) so a
+  // freshly admin-created coach account is bookable right away without
+  // an extra manual step — an admin already went through the deliberate
+  // act of creating the account via coachController.createCoach, which
+  // is the review gate. Admin can still hide a specific coach via
   // PUT /admin/coaches/:id/visibility (coachController.setCoachVisibility)
   // — never settable by the coach themselves.
-  isDisplayed: { type: Boolean, default: false },
+  isDisplayed: { type: Boolean, default: true },
 
   phone: { type: String, 
     trim: true },

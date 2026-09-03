@@ -1,5 +1,5 @@
 const express = require('express');
-const { body } = require('express-validator');
+const { body, query } = require('express-validator');
 const adminController = require('../controllers/adminController');
 const userController = require('../controllers/userController');
 const coachController = require('../controllers/coachController');
@@ -86,6 +86,7 @@ router.post(
   adminController.createMember
 );
 router.get('/members/:id', adminController.getMember);
+router.get('/members/:id/medical-document', adminController.getMemberMedicalDocument);
 router.put(
   '/members/:id',
   [
@@ -120,6 +121,14 @@ router.put('/notifications/:id/read', adminController.markNotificationRead);
 router.put('/notifications/mark-all-read', adminController.markAllNotificationsRead);
 
 router.get('/payments', adminController.getPayments);
+router.get(
+  '/payments/export',
+  [
+    query('startDate').isISO8601().withMessage('Start date is required'),
+    query('endDate').isISO8601().withMessage('End date is required'),
+  ],
+  adminController.exportPaymentsXLSX
+);
 router.post(
   '/payments/manual',
   [

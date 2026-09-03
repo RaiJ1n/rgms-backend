@@ -5,13 +5,21 @@ const generateToken = require('../utils/generateToken');
 const { generateOtp, hashOtp } = require('../utils/generateOtp');
 const { generateVerificationToken, hashVerificationToken } = require('../utils/generateVerificationToken');
 
-const registerUser = async ({ fullname, email, password, phone, address }) => {
+const registerUser = async ({ fullname, email, password, phone, address, privacyNoticeAcknowledged }) => {
   const existingUser = await User.findOne({ email });
   if (existingUser) {
     throw new Error('User already exists');
   }
 
-  const user = await User.create({ fullname, email, password, phone, address });
+  const user = await User.create({
+    fullname,
+    email,
+    password,
+    phone,
+    address,
+    privacyNoticeAcknowledged: !!privacyNoticeAcknowledged,
+    privacyNoticeAcknowledgedAt: privacyNoticeAcknowledged ? new Date() : undefined,
+  });
 
   // Fire-and-forget for the admin notification bell — a failure here
   // shouldn't block registration itself.
@@ -44,8 +52,19 @@ const loginUser = async ({ email, password }) => {
     err.statusCode = 403;
     throw err;
   }
-  const token = generateToken({ id: user._id });
+  const token = generateToken({ id: user._id, tokenVersion: user.tokenVersion || 0 });
   return { user, token };
+};
+
+// Called from authController.logout, which runs behind `protect` so
+// req.user is available. Bumping tokenVersion means the token that was
+// just used to make this very request — and any other token issued
+// before this moment — stops passing the check in authMiddleware/
+// coachAuthMiddleware immediately, regardless of its 7-day expiry.
+// This is the actual server-side "log out everywhere" the frontend
+// clearing localStorage alone can't provide.
+const logoutUser = async (userId) => {
+  await User.findByIdAndUpdate(userId, { $inc: { tokenVersion: 1 } });
 };
 
 const createForgotPasswordOtp = async (user) => {
@@ -80,6 +99,10 @@ const resetPassword = async ({ email, otp, password }) => {
   user.password = password;
   user.forgotPasswordOtp = undefined;
   user.forgotPasswordOtpExpires = undefined;
+  // Anyone else holding a token issued before this reset (e.g. the
+  // account was compromised, which is often why a reset happens)
+  // shouldn't stay logged in past it.
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
   await user.save();
   return user;
 };
@@ -121,6 +144,7 @@ const resendVerification = async (email) => {
 module.exports = {
   registerUser,
   loginUser,
+  logoutUser,
   createForgotPasswordOtp,
   verifyForgotPasswordOtp,
   resetPassword,

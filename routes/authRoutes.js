@@ -1,6 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const authController = require('../controllers/authController');
+const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
@@ -11,6 +12,12 @@ router.post(
     body('email').isEmail().withMessage('Valid email is required'),
     body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
     body('address').optional().isString().trim(),
+    // Section D1: server-side enforcement, not just a disabled frontend
+    // button — a request with this missing or false is rejected before
+    // it ever reaches authService.registerUser.
+    body('privacyNoticeAcknowledged')
+      .custom((v) => v === true)
+      .withMessage('You must acknowledge the Privacy Notice to register'),
   ],
   authController.register
 );
@@ -24,7 +31,12 @@ router.post(
   authController.login
 );
 
-router.post('/logout', authController.logout);
+// `protect` here isn't for access control (anyone can log themselves
+// out) — it's what populates req.user so authController.logout knows
+// which account's tokenVersion to bump. Without it, logout can't
+// actually invalidate anything server-side; it was previously a no-op
+// wrapped around a 200 response.
+router.post('/logout', protect, authController.logout);
 router.post(
   '/forgot-password',
   [body('email').isEmail().withMessage('Valid email is required')],
