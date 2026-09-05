@@ -222,48 +222,58 @@ function deleteCloudinaryMedicalDocument(doc) {
 
 const uploadMedicalDocument = async (req, res, next) => {
   try {
-    if (!req.file) return res.status(400).json({ success: false, message: 'A file is required.' });
+    const files = req.files || [];
+    if (!files.length) return res.status(400).json({ success: false, message: 'At least one file is required.' });
 
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Section D1: this endpoint had no consent gate at all before —
-    // noted as a gap during the C4 fix (document upload wasn't behind
-    // the same medicalConsentGiven check as the free-text medical
-    // fields). Using the broader privacy notice flag here rather than
-    // medicalConsentGiven since D1 is meant to cover this specific case
-    // by name ("medical document upload") separately from that
-    // narrower, already-existing consent.
-    if (!user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged !== 'true') {
+    // Section D1/UI Spec §2: unlike every other privacyNoticeAcknowledged
+    // gate in this file, medical document upload deliberately does NOT
+    // accept "already acknowledged on the account" as sufficient — the
+    // spec calls this out by name: the confirmation must be shown again
+    // before every submission, even if the member accepted it during an
+    // earlier upload. So this check only ever looks at THIS request's
+    // body flag, never at user.privacyNoticeAcknowledged, unlike
+    // updateProfile/uploadProfilePhoto above.
+    if (req.body.privacyNoticeAcknowledged !== 'true') {
       return res.status(400).json({
         success: false,
-        message: 'Please acknowledge the Privacy Notice before uploading a medical document.',
+        message: 'Please acknowledge the Privacy Notice before uploading medical documents.',
       });
     }
+    // Still recorded on the account (same field Section D1 uses
+    // elsewhere) so other, one-time-only gates elsewhere in the app
+    // don't re-prompt unnecessarily — but recording it here never lets
+    // a *future* medical document upload skip the check above.
     if (!user.privacyNoticeAcknowledged) {
       user.privacyNoticeAcknowledged = true;
       user.privacyNoticeAcknowledgedAt = new Date();
     }
 
-    const oldDocument = user.medicalDocument?.public_id ? { ...user.medicalDocument.toObject?.() ?? user.medicalDocument } : null;
-
-    user.medicalDocument = {
-      url: req.file.path,
-      public_id: req.file.filename,
-      resourceType: req.file.resource_type || 'image',
-      fileName: req.file.originalname,
-      fileType: req.file.mimetype,
-      fileSize: req.file.size,
+    const newDocuments = files.map((file) => ({
+      url: file.path,
+      public_id: file.filename,
+      resourceType: file.resource_type || 'image',
+      fileName: file.originalname,
+      fileType: file.mimetype,
+      fileSize: file.size,
       uploadedAt: new Date(),
-    };
-    await user.save();
+    }));
 
-    deleteCloudinaryMedicalDocument(oldDocument);
+    // Additive — a new batch is appended, never replaces what's already
+    // on file (see the medicalDocuments comment in User.js).
+    user.medicalDocuments.push(...newDocuments);
+    await user.save();
 
     const safeUser = user.toObject();
     delete safeUser.password;
 
-    res.json({ success: true, message: 'Medical document uploaded successfully.', data: safeUser });
+    res.json({
+      success: true,
+      message: files.length > 1 ? `${files.length} documents uploaded successfully.` : 'Medical document uploaded successfully.',
+      data: safeUser,
+    });
   } catch (error) {
     next(error);
   }
@@ -298,17 +308,19 @@ function buildMedicalDocumentResponse(medicalDocument) {
 }
 
 // Returns a short-lived signed URL rather than ever persisting/handing out
-// a directly-usable link — see the comment on medicalDocument in User.js
+// a directly-usable link — see the comment on medicalDocuments in User.js
 // and on medicalDocumentStorage in uploadMiddleware.js. Owner-only here;
 // staff access goes through adminController.getMemberMedicalDocument
 // instead, which reuses buildMedicalDocumentResponse above rather than
-// this route being relaxed to accept an arbitrary id.
+// this route being relaxed to accept an arbitrary member id. Scoped to
+// one document by :docId now that a member can have several on file.
 const viewMedicalDocument = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user._id).select('medicalDocument');
-    const result = buildMedicalDocumentResponse(user?.medicalDocument);
+    const user = await User.findById(req.user._id).select('medicalDocuments');
+    const document = user?.medicalDocuments?.id(req.params.docId);
+    const result = buildMedicalDocumentResponse(document);
     if (!result) {
-      return res.status(404).json({ success: false, message: 'No medical document on file.' });
+      return res.status(404).json({ success: false, message: 'Document not found.' });
     }
 
     res.json({ success: true, data: result });
@@ -322,12 +334,13 @@ const deleteMedicalDocument = async (req, res, next) => {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    if (!user.medicalDocument?.public_id) {
-      return res.status(404).json({ success: false, message: 'No medical document on file.' });
+    const document = user.medicalDocuments.id(req.params.docId);
+    if (!document?.public_id) {
+      return res.status(404).json({ success: false, message: 'Document not found.' });
     }
 
-    const oldDocument = { ...(user.medicalDocument.toObject?.() ?? user.medicalDocument) };
-    user.medicalDocument = undefined;
+    const oldDocument = { ...document.toObject() };
+    document.deleteOne(); // removes just this one subdocument from the array
     await user.save();
 
     deleteCloudinaryMedicalDocument(oldDocument);

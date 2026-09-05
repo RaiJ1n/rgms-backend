@@ -86,7 +86,7 @@ router.post(
   adminController.createMember
 );
 router.get('/members/:id', adminController.getMember);
-router.get('/members/:id/medical-document', adminController.getMemberMedicalDocument);
+router.get('/members/:id/medical-document/:docId', adminController.getMemberMedicalDocument);
 router.put(
   '/members/:id',
   [

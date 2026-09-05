@@ -1,6 +1,6 @@
 const { validationResult } = require('express-validator');
 const User = require('../models/User');
-const CoachQuestion = require('../models/CoachQuestion');
+const CoachQuestion = require('../models/coachQuestion');
 const CoachRegistrationRequest = require('../models/CoachRegistrationRequest');
 const escapeRegex = require('../utils/escapeRegex');
 const socketUtil = require('../utils/socket');
@@ -91,23 +91,31 @@ const registerToCoach = async (req, res, next) => {
     const coach = await User.findOne({ _id: req.params.id, role: 'coach', isDisplayed: true });
     if (!coach) return res.status(404).json({ success: false, message: 'Coach not found or not currently available' });
 
-    // Business rule #4/#5: no duplicate pending/accepted request to the
-    // SAME coach. A client with a rejected or an accepted-then-rejected
-    // history with this coach can still submit a fresh request — only
-    // an active (pending) or already-successful (accepted) one blocks a
-    // new submission.
+    // Business rule: a client may only be registered with (or have a
+    // pending request to) ONE coach at a time — across ALL coaches, not
+    // just this one. This used to be scoped with `coachId: coach._id`,
+    // which only blocked a duplicate request to the SAME coach and let
+    // a client freely register with a second, different coach while
+    // already pending/accepted elsewhere. A client with only rejected
+    // history (with this coach or any other) can still submit a fresh
+    // request — only an active (pending) or already-successful
+    // (accepted) request, with any coach, blocks a new submission.
     const existing = await CoachRegistrationRequest.findOne({
       clientId: req.user._id,
-      coachId: coach._id,
       status: { $in: ['pending', 'accepted'] },
     });
     if (existing) {
+      const sameCoach = existing.coachId.toString() === coach._id.toString();
       return res.status(409).json({
         success: false,
         message:
           existing.status === 'accepted'
-            ? 'You are already registered with this coach'
-            : 'You already have a pending registration request with this coach',
+            ? sameCoach
+              ? 'You are already registered with this coach'
+              : 'You are already registered with a coach. You can only be registered with one coach at a time.'
+            : sameCoach
+              ? 'You already have a pending registration request with this coach'
+              : 'You already have a pending registration request with another coach. Please wait for their response before registering elsewhere.',
       });
     }
 
@@ -134,12 +142,29 @@ const registerToCoach = async (req, res, next) => {
       answers.push({ questionId: q._id, question: q.question, answer: raw });
     }
 
-    const request = await CoachRegistrationRequest.create({
-      clientId: req.user._id,
-      coachId: coach._id,
-      answers,
-      status: 'pending',
-    });
+    let request;
+    try {
+      request = await CoachRegistrationRequest.create({
+        clientId: req.user._id,
+        coachId: coach._id,
+        answers,
+        status: 'pending',
+      });
+    } catch (createError) {
+      // The findOne check above is read-then-write and has a race
+      // window between two concurrent registration submissions from the
+      // same client (e.g. double-clicking Submit, or two tabs). The
+      // partial unique index on { clientId } (see CoachRegistrationRequest.js)
+      // is the actual guarantee — E11000 here means that race was hit,
+      // so surface the same friendly message instead of a raw 500.
+      if (createError?.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message: 'You already have an active registration request or coach. You can only be registered with one coach at a time.',
+        });
+      }
+      throw createError;
+    }
 
     // Best-effort real-time nudge to the coach — see utils/socket.js's
     // emitToUser, joined by every authenticated socket regardless of

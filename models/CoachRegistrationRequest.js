@@ -38,6 +38,24 @@ const coachRegistrationRequestSchema = new mongoose.Schema(
 coachRegistrationRequestSchema.index({ coachId: 1, status: 1 });
 coachRegistrationRequestSchema.index({ clientId: 1, coachId: 1 });
 
+// Business rule: a client may only have ONE active (pending or
+// accepted) coach relationship at a time, across ALL coaches — not
+// just no duplicate against the same coach. coachDirectoryController's
+// registerToCoach already checks this before writing, but that
+// read-then-write check has a race window between two concurrent
+// registration requests; this partial unique index is the actual data-
+// layer guarantee. It's "partial" so it only applies to documents whose
+// status is pending/accepted — a client can still accumulate any number
+// of 'rejected' rows (past history with different coaches), just never
+// more than one active row at once.
+coachRegistrationRequestSchema.index(
+  { clientId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: { $in: ['pending', 'accepted'] } },
+  }
+);
+
 // Same double-registration guard as CoachQuestion.js — see the comment
 // there for why.
 module.exports = mongoose.models.CoachRegistrationRequest || mongoose.model('CoachRegistrationRequest', coachRegistrationRequestSchema);

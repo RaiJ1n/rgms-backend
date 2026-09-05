@@ -155,6 +155,86 @@ const uploadMyProfilePhoto = async (req, res, next) => {
   }
 };
 
+// ---- Settings (Section 1) ----
+// Deliberately separate from getMyProfile/updateMyProfile above — those
+// are "Personal Information" (public-facing profile shown to clients);
+// this is account-level Settings (notification preferences, password),
+// same split already used for Client (UserProfile.vue vs Settings.vue)
+// and Admin (their own profile section vs the Security section on the
+// same page). Kept in this controller rather than a new file since it's
+// the same req.coach-scoped, protectCoach-gated pattern as everything
+// else here.
+
+const getMySettings = async (req, res, next) => {
+  try {
+    res.json({
+      success: true,
+      data: {
+        email: req.coach.email,
+        notificationEmail: req.coach.notificationEmail || '',
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateMySettings = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const coach = await User.findById(req.coach._id).select('-password');
+    if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
+
+    const { notificationEmail } = req.body;
+    // Empty string is valid here — it's how a coach clears the override
+    // and falls back to their login email for notifications.
+    if (notificationEmail !== undefined) {
+      coach.notificationEmail = notificationEmail.trim().toLowerCase();
+    }
+
+    await coach.save();
+    res.json({
+      success: true,
+      message: 'Settings updated',
+      data: { email: coach.email, notificationEmail: coach.notificationEmail || '' },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Same current-password-required pattern as userController's
+// change-password for members — a coach proves they know the current
+// password before setting a new one. Unlike Admin Settings, no OTP step
+// here; that OTP flow is specific to AdminSettings.vue's own design and
+// isn't part of this spec for coaches.
+const changeMyPassword = async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+
+    const { currentPassword, newPassword } = req.body;
+
+    const coach = await User.findById(req.coach._id);
+    if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
+
+    const matches = await coach.matchPassword(currentPassword);
+    if (!matches) {
+      return res.status(400).json({ success: false, message: 'Current password is incorrect' });
+    }
+
+    coach.password = newPassword; // re-hashed by the User pre('save') hook
+    coach.lastPasswordChange = new Date();
+    await coach.save();
+
+    res.json({ success: true, message: 'Password updated successfully' });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ---- Client requests (Sections 6/7) ----
 // Every query below is scoped to req.coach._id — a coach can only ever
 // see or act on their own requests/clients, never another coach's
@@ -253,6 +333,9 @@ module.exports = {
   getMyProfile,
   updateMyProfile,
   uploadMyProfilePhoto,
+  getMySettings,
+  updateMySettings,
+  changeMyPassword,
   getMyRequests,
   getMyClients,
   acceptRequest,

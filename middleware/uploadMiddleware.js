@@ -35,7 +35,13 @@ const medicalDocumentStorage = new CloudinaryStorage({
   },
 });
 
-const MEDICAL_DOCUMENT_MAX_BYTES = 5 * 1024 * 1024; // 5MB
+const MEDICAL_DOCUMENT_MAX_BYTES = 5 * 1024 * 1024; // 5MB, per file
+// Cap on how many files can be selected in a single upload batch. Not a
+// cap on how many a member can have on file in total (uploads are
+// additive — see User.js's medicalDocuments comment) — just a sane
+// per-request ceiling so one form submission can't multer-parse an
+// unbounded number of multipart parts.
+const MEDICAL_DOCUMENT_MAX_FILES = 10;
 
 const medicalDocumentFileFilter = (req, file, cb) => {
   const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'];
@@ -50,10 +56,11 @@ const medicalDocumentFileFilter = (req, file, cb) => {
 
 const uploadMedicalDocument = multer({
   storage: medicalDocumentStorage,
-  limits: { fileSize: MEDICAL_DOCUMENT_MAX_BYTES },
+  limits: { fileSize: MEDICAL_DOCUMENT_MAX_BYTES, files: MEDICAL_DOCUMENT_MAX_FILES },
   fileFilter: medicalDocumentFileFilter,
 });
 
 module.exports = upload;
 module.exports.uploadMedicalDocument = uploadMedicalDocument;
 module.exports.MEDICAL_DOCUMENT_MAX_BYTES = MEDICAL_DOCUMENT_MAX_BYTES;
+module.exports.MEDICAL_DOCUMENT_MAX_FILES = MEDICAL_DOCUMENT_MAX_FILES;
