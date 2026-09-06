@@ -53,20 +53,25 @@ router.put(
 );
 // Upload or replace profile photo
 router.put('/profile/photo', upload.single('photo'), userController.uploadProfilePhoto);
-// Upload/replace, view, and remove the medical document (certificate,
-// clearance, doctor's note). Uses the separate, secured uploader from
+// Upload/replace, view, and remove medical documents (certificates,
+// clearances, doctor's notes). Uses the separate, secured uploader from
 // uploadMiddleware.js — see that file for why this isn't just `upload`.
+// A member can have several on file (uploads are additive), so view
+// and delete are scoped to one document at a time by :docId.
 router.put(
   '/profile/medical-document',
   (req, res, next) => {
-    upload.uploadMedicalDocument.single('medicalDocument')(req, res, (err) => {
+    upload.uploadMedicalDocument.array('medicalDocuments', upload.MEDICAL_DOCUMENT_MAX_FILES)(req, res, (err) => {
       if (err) {
-        // multer errors (bad file type from fileFilter, file too large) land
-        // here rather than in the route handler, since multer itself calls
-        // next(err) before req even reaches userController.
+        // multer errors (bad file type from fileFilter, file too large,
+        // too many files in one batch) land here rather than in the
+        // route handler, since multer itself calls next(err) before req
+        // even reaches userController.
         const message =
           err.code === 'LIMIT_FILE_SIZE'
-            ? 'File is too large. Maximum size is 5MB.'
+            ? 'One of the files is too large. Maximum size is 5MB per file.'
+            : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE'
+            ? `You can upload up to ${upload.MEDICAL_DOCUMENT_MAX_FILES} files at a time.`
             : err.message || 'Could not upload file.';
         return res.status(400).json({ success: false, message });
       }
@@ -75,8 +80,8 @@ router.put(
   },
   userController.uploadMedicalDocument
 );
-router.get('/profile/medical-document', userController.viewMedicalDocument);
-router.delete('/profile/medical-document', userController.deleteMedicalDocument);
+router.get('/profile/medical-document/:docId', userController.viewMedicalDocument);
+router.delete('/profile/medical-document/:docId', userController.deleteMedicalDocument);
 router.get('/profile/social', userController.getSocialAccounts);
 router.put(
   '/change-password',

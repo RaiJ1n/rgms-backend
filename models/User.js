@@ -72,6 +72,15 @@ const userSchema = new mongoose.Schema({
   fitnessJourney: { type: String, trim: true },
   currentFitnessGoal: { type: String, trim: true },
   preferredExerciseTime: { type: String, trim: true },
+  // Settings-page-only field (Section 1, coach Settings) — separate from
+  // the coach's login `email` above. This is purely where the coach
+  // wants notification mail (client requests, etc.) delivered; it is
+  // NEVER used for authentication and changing it never touches the
+  // login email or requires re-verification, unlike changing `email`
+  // does elsewhere in this schema. Empty string means "not set" — falls
+  // back to the coach's login email wherever notifications are sent,
+  // same empty-string convention as facebookUrl/instagramUrl below.
+  notificationEmail: { type: String, trim: true, lowercase: true, default: '' },
   // Admin-controlled public visibility — whether this coach shows up on
   // the Client/User "Coaches" page. Defaults to true (visible) so a
   // freshly admin-created coach account is bookable right away without
@@ -129,26 +138,30 @@ const userSchema = new mongoose.Schema({
   medicalConsentGiven: { type: Boolean, default: false },
   medicalConsentDate: { type: Date },
 
-  // --- Medical document upload (Bento redesign) ---
-  // A single uploaded file (image or PDF) — a medical certificate,
-  // clearance, or doctor's note — distinct from the free-text medical
-  // fields above. Stored as an `authenticated` Cloudinary resource (see
-  // uploadMiddleware.js's uploadMedicalDocument) so `url`/`public_id`
-  // alone are not enough to fetch the file; viewing always goes through
-  // userController.viewMedicalDocument, which checks ownership and
-  // mints a short-lived signed URL. Same one-file-at-a-time convention
-  // as `photo` above — uploading again replaces it (old Cloudinary
-  // asset is cleaned up the same way deleteCloudinaryImage() already
-  // does for photos).
-  medicalDocument: {
-    url: { type: String },
-    public_id: { type: String },
-    resourceType: { type: String }, // Cloudinary resource_type used at upload time (needed to sign/delete correctly)
-    fileName: { type: String },
-    fileType: { type: String }, // MIME type, e.g. 'application/pdf', 'image/png'
-    fileSize: { type: Number }, // bytes
-    uploadedAt: { type: Date },
-  },
+  // --- Medical document upload (Bento redesign, now multi-file) ---
+  // An array of uploaded files (images or PDFs) — medical certificates,
+  // clearances, doctor's notes — distinct from the free-text medical
+  // fields above. Each is stored as an `authenticated` Cloudinary
+  // resource (see uploadMiddleware.js's uploadMedicalDocument) so
+  // `url`/`public_id` alone are not enough to fetch the file; viewing
+  // always goes through userController.viewMedicalDocument, which
+  // checks ownership and mints a short-lived signed URL for one
+  // specific document (identified by its own _id, auto-assigned by
+  // Mongoose to each array entry). Uploading is additive — a new batch
+  // is appended to this array, never replacing what's already here;
+  // removing one is done by _id via deleteMedicalDocument, which only
+  // ever touches the single matching entry.
+  medicalDocuments: [
+    {
+      url: { type: String },
+      public_id: { type: String },
+      resourceType: { type: String }, // Cloudinary resource_type used at upload time (needed to sign/delete correctly)
+      fileName: { type: String },
+      fileType: { type: String }, // MIME type, e.g. 'application/pdf', 'image/png'
+      fileSize: { type: Number }, // bytes
+      uploadedAt: { type: Date },
+    },
+  ],
 
   // Forgot-password OTP (unauthenticated flow, started from the Login
   // page's "Forgot Password" link). Same hash-then-store convention as

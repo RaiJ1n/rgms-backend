@@ -36,6 +36,29 @@ router.put(
 );
 router.put('/profile/photo', upload.single('photo'), coachPortalController.uploadMyProfilePhoto);
 
+// Settings (Section 1) — notification email + password, separate from
+// Personal Information above.
+router.get('/settings', coachPortalController.getMySettings);
+router.put(
+  '/settings',
+  [
+    body('notificationEmail')
+      .optional({ checkFalsy: true })
+      .isEmail()
+      .withMessage('Enter a valid notification email'),
+  ],
+  coachPortalController.updateMySettings
+);
+router.put(
+  '/change-password',
+  [
+    body('currentPassword').notEmpty().withMessage('Current password is required'),
+    body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
+    body('confirmPassword').custom((value, { req }) => value === req.body.newPassword).withMessage('Passwords do not match'),
+  ],
+  coachPortalController.changeMyPassword
+);
+
 // Client requests / client management (Sections 6/7)
 router.get('/requests', coachPortalController.getMyRequests);
 router.put('/requests/:id/accept', coachPortalController.acceptRequest);

@@ -149,16 +149,20 @@ const getMember = async (req, res, next) => {
         medicalConsentGiven: user.medicalConsentGiven || false,
         // Metadata only — same contract MedicalDocumentCard.vue already
         // expects from the self-service profile endpoint. The signed,
-        // actually-openable URL is minted on demand by
-        // GET /admin/members/:id/medical-document below, not embedded
-        // here, so this response stays cheap even if nobody clicks View.
-        medicalDocument: user.medicalDocument?.public_id
-          ? {
-              fileName: user.medicalDocument.fileName,
-              fileType: user.medicalDocument.fileType,
-              uploadedAt: user.medicalDocument.uploadedAt,
-            }
-          : null,
+        // actually-openable URL for any one of these is minted on demand
+        // by GET /admin/members/:id/medical-document/:docId below, not
+        // embedded here, so this response stays cheap even if nobody
+        // clicks View. A member can have several on file (uploads are
+        // additive) — see the medicalDocuments comment in User.js.
+        medicalDocuments: (user.medicalDocuments || [])
+          .filter((doc) => doc.public_id)
+          .map((doc) => ({
+            _id: doc._id,
+            fileName: doc.fileName,
+            fileType: doc.fileType,
+            fileSize: doc.fileSize,
+            uploadedAt: doc.uploadedAt,
+          })),
       },
     });
   } catch (error) {
@@ -173,15 +177,17 @@ const getMember = async (req, res, next) => {
 // sits behind adminRoutes.js's blanket protect+admin, so reaching this
 // function at all already proves the requester is an authenticated
 // admin — the "authorized personnel, for program customization" case
-// the medicalDocument field's comment in User.js anticipates.
+// the medicalDocuments field's comment in User.js anticipates. Scoped
+// to one document by :docId now that a member can have several on file.
 const getMemberMedicalDocument = async (req, res, next) => {
   try {
-    const user = await User.findOne({ _id: req.params.id, role: 'user' }).select('medicalDocument');
+    const user = await User.findOne({ _id: req.params.id, role: 'user' }).select('medicalDocuments');
     if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
 
-    const result = buildMedicalDocumentResponse(user.medicalDocument);
+    const document = user.medicalDocuments?.id(req.params.docId);
+    const result = buildMedicalDocumentResponse(document);
     if (!result) {
-      return res.status(404).json({ success: false, message: 'No medical document on file for this member.' });
+      return res.status(404).json({ success: false, message: 'Document not found for this member.' });
     }
 
     res.json({ success: true, data: result });
