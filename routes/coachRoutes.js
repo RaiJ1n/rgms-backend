@@ -64,6 +64,13 @@ router.get('/requests', coachPortalController.getMyRequests);
 router.put('/requests/:id/accept', coachPortalController.acceptRequest);
 router.put('/requests/:id/reject', coachPortalController.rejectRequest);
 router.get('/clients', coachPortalController.getMyClients);
+// Client Details (Section 4) — one specific client's own coach viewing
+// their profile/medical info/medical documents. Both routes re-verify
+// the coach-client relationship server-side on every request (see
+// coachPortalController.assertAcceptedClient) rather than trusting
+// that only this coach's own frontend would ever request this id.
+router.get('/clients/:id', coachPortalController.getClientDetail);
+router.get('/clients/:id/medical-document/:docId', coachPortalController.getClientMedicalDocument);
 
 // ---- Exercise library (Section E3) — private per-coach ----
 router.get('/exercises', exerciseController.getMyExercises);

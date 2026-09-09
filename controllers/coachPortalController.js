@@ -4,6 +4,12 @@ const User = require('../models/User');
 const CoachRegistrationRequest = require('../models/CoachRegistrationRequest');
 const cloudinary = require('../config/cloudinary');
 const socketUtil = require('../utils/socket');
+// Shared with the member's own medical-document view (Section 4:
+// "Medical Documents" on the Client Details page a coach sees) — reuses
+// the exact same "mint a fresh signed URL, never persist/hand out a raw
+// one" helper rather than duplicating it, same reasoning as
+// adminController.getMemberMedicalDocument reusing it for the admin side.
+const { buildMedicalDocumentResponse } = require('./userController');
 
 // Fire-and-forget Cloudinary cleanup, same helper/pattern as
 // userController.js's deleteCloudinaryImage — kept as a local copy here
@@ -270,6 +276,101 @@ const getMyClients = async (req, res, next) => {
   }
 };
 
+// ---- Client Details (Section 4: coach viewing one of their own,
+// already-accepted clients) ----
+//
+// Shared guard: only an ACCEPTED CoachRegistrationRequest between this
+// coach and this client authorizes access — pending, rejected, or no
+// relationship at all must all be treated the same as "not your
+// client." This is enforced here, on the backend, rather than trusted
+// from whatever list the frontend happens to already be showing —
+// Section 6: "A Coach must not be able to access another Coach's
+// clients by manually changing a URL, ID, request parameter, or
+// frontend state."
+async function assertAcceptedClient(coachId, clientId) {
+  return CoachRegistrationRequest.findOne({ coachId, clientId, status: 'accepted' });
+}
+
+// Fields safe to show THIS client's own coach — includes medical info
+// (Section 4 explicitly calls this out), unlike getMyClients' list view
+// above, which only needs enough to render a name/avatar row. Still
+// excludes password (via .select) and anything not relevant to a coach
+// safely customizing this client's classes/programs.
+const CLIENT_DETAIL_FIELDS =
+  'fullname email phone address photo medicalConditions medicalAllergies emergencyContactName emergencyContactPhone medicalNotes medicalConsentGiven medicalDocuments createdAt';
+
+const getClientDetail = async (req, res, next) => {
+  try {
+    const relationship = await assertAcceptedClient(req.coach._id, req.params.id);
+    // Deliberately the same 404 whether the id doesn't exist, belongs to
+    // someone who was never this coach's client, or belongs to another
+    // coach's client — same "don't let id-probing distinguish reasons"
+    // principle as coachDirectoryController.getDisplayedCoach.
+    if (!relationship) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const client = await User.findOne({ _id: req.params.id, role: 'user' }).select(CLIENT_DETAIL_FIELDS);
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const safeClient = client.toObject();
+    // Medical documents: metadata only (Section 4: "See the list of
+    // uploaded medical documents... See the document/file name...").
+    // url/public_id are never handed out directly here — they're
+    // Cloudinary `authenticated` resources anyway (see User.js) — a
+    // coach opening one goes through getClientMedicalDocument below,
+    // which mints a fresh signed URL and re-checks this same
+    // relationship, same convention as the member's own profile view.
+    safeClient.medicalDocuments = (client.medicalDocuments || []).map((doc) => ({
+      _id: doc._id,
+      fileName: doc.fileName,
+      fileType: doc.fileType,
+      fileSize: doc.fileSize,
+      uploadedAt: doc.uploadedAt,
+    }));
+
+    // Questionnaire answers from the registration request itself —
+    // already fetched above for the authorization check, so this is
+    // free (no extra query). Preserves the "view this client's
+    // registration answers" feature the coach-side client list already
+    // had, now folded into the one dedicated details view instead of a
+    // separate modal.
+    safeClient.registrationAnswers = relationship.answers || [];
+    safeClient.clientSince = relationship.reviewedAt || relationship.createdAt;
+
+    res.json({ success: true, data: safeClient });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Mirrors userController.viewMedicalDocument's signed-URL pattern, just
+// re-scoped to "this coach's own accepted client" instead of "the
+// logged-in member's own document" — reuses the same
+// buildMedicalDocumentResponse helper so both stay in sync, and
+// re-checks the coach-client relationship independently of
+// getClientDetail (this is its own request; nothing from an earlier
+// request is trusted).
+const getClientMedicalDocument = async (req, res, next) => {
+  try {
+    const relationship = await assertAcceptedClient(req.coach._id, req.params.id);
+    if (!relationship) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const client = await User.findOne({ _id: req.params.id, role: 'user' }).select('medicalDocuments');
+    const document = client?.medicalDocuments?.id(req.params.docId);
+    const result = buildMedicalDocumentResponse(document);
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'Document not found.' });
+    }
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const acceptRequest = async (req, res, next) => {
   try {
     const request = await CoachRegistrationRequest.findById(req.params.id);
@@ -338,6 +439,8 @@ module.exports = {
   changeMyPassword,
   getMyRequests,
   getMyClients,
+  getClientDetail,
+  getClientMedicalDocument,
   acceptRequest,
   rejectRequest,
 };
