@@ -136,4 +136,10 @@ router.put(
 );
 router.delete('/workout-plans/:id', workoutPlanController.deletePlan);
 
+// Notifications (Section 12) — coach bell, scoped to this coach only
+// (coachPortalController.getMyNotifications filters on req.coach._id).
+router.get('/notifications', coachPortalController.getMyNotifications);
+router.put('/notifications/:id/read', coachPortalController.markNotificationRead);
+router.put('/notifications/mark-all-read', coachPortalController.markAllNotificationsRead);
+
 module.exports = router;

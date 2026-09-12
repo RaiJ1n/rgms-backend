@@ -2,7 +2,7 @@ const express = require('express');
 const { body } = require('express-validator');
 const coachDirectoryController = require('../controllers/coachDirectoryController');
 const { protect } = require('../middleware/authMiddleware');
-const { restrictTo } = require('../middleware/roleMiddleware');
+const { restrictTo } = require('../middleware/roleMIddleware');
 
 const router = express.Router();
 

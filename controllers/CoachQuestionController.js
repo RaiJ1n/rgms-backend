@@ -1,5 +1,5 @@
 const { validationResult } = require('express-validator');
-const CoachQuestion = require('../models/coachQuestion');
+const CoachQuestion = require('../models/CoachQuestion');
 
 // All of these sit behind adminRoutes.js's router.use(protect, admin) —
 // same pattern as coachController.js. Only an authenticated admin can

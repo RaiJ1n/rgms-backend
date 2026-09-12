@@ -2,6 +2,7 @@ const { validationResult } = require('express-validator');
 const GymClass = require('../models/GymClass');
 const User = require('../models/User');
 const CoachRegistrationRequest = require('../models/CoachRegistrationRequest');
+const Notification = require('../models/Notification');
 const cloudinary = require('../config/cloudinary');
 const socketUtil = require('../utils/socket');
 // Shared with the member's own medical-document view (Section 4:
@@ -428,6 +429,52 @@ const rejectRequest = async (req, res, next) => {
   }
 };
 
+// ---- Notifications (coach bell — Section 12) ----
+// Unlike adminController.getNotifications (a single shared inbox every
+// admin sees, unscoped), these MUST filter on recipientId — a coach must
+// never see another coach's notifications just because the query forgot
+// to scope it (Section 19).
+const getMyNotifications = async (req, res, next) => {
+  try {
+    const notifications = await Notification.find({ recipientId: req.coach._id })
+      .sort({ createdAt: -1 })
+      .limit(30);
+    const unreadCount = await Notification.countDocuments({ recipientId: req.coach._id, read: false });
+    res.json({ success: true, data: notifications, unreadCount });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const markNotificationRead = async (req, res, next) => {
+  try {
+    // Scoped to recipientId in the filter itself (not just looked up by
+    // id then trusted) — a coach guessing/enumerating another coach's
+    // notification id gets the same 404 as a nonexistent one, never a
+    // 403 that would confirm the id belongs to someone else.
+    const notification = await Notification.findOneAndUpdate(
+      { _id: req.params.id, recipientId: req.coach._id },
+      { read: true },
+      { new: true }
+    );
+    if (!notification) return res.status(404).json({ success: false, message: 'Notification not found' });
+    socketUtil.emitToUser(req.coach._id, 'notification:read', { _id: notification._id });
+    res.json({ success: true, data: notification });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const markAllNotificationsRead = async (req, res, next) => {
+  try {
+    await Notification.updateMany({ recipientId: req.coach._id, read: false }, { read: true });
+    socketUtil.emitToUser(req.coach._id, 'notification:all-read', {});
+    res.json({ success: true, message: 'All notifications marked read' });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getMyClasses,
   getMyClassRoster,
@@ -443,4 +490,7 @@ module.exports = {
   getClientMedicalDocument,
   acceptRequest,
   rejectRequest,
+  getMyNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
 };
