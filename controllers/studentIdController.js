@@ -1,4 +1,4 @@
-const StudentVerification = require('../models/StudentVerification');
+const StudentVerification = require('../models/studentVerification');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const socketUtil = require('../utils/socket');

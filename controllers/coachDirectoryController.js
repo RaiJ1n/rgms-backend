@@ -1,6 +1,6 @@
 const { validationResult } = require('express-validator');
 const User = require('../models/User');
-const CoachQuestion = require('../models/coachQuestion');
+const CoachQuestion = require('../models/CoachQuestion');
 const CoachRegistrationRequest = require('../models/CoachRegistrationRequest');
 const escapeRegex = require('../utils/escapeRegex');
 const socketUtil = require('../utils/socket');

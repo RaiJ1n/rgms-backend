@@ -1,8 +1,10 @@
 const { validationResult } = require('express-validator');
-const WorkoutPlan = require('../models/WorkoutPlan');
+const WorkoutPlan = require('../models/Workoutplan');
 const WorkoutPlanProgress = require('../models/WorkoutPlanProgress');
 const Exercise = require('../models/Exercise');
 const CoachRegistrationRequest = require('../models/CoachRegistrationRequest');
+const Notification = require('../models/Notification');
+const socketUtil = require('../utils/socket');
 
 // ---------------------------------------------------------------------
 // Shared helper — Section E4's actual enforcement point.
@@ -246,6 +248,19 @@ const updateProgress = async (req, res, next) => {
 
     const done = completedSets.length >= component.sets;
 
+    // Section 12: "client starts/engages with an assigned workout" needs
+    // a real signal to fire on, not a separate unused "start" button the
+    // existing ClientExerciseView.vue flow doesn't have. The first-ever
+    // progress document for this (plan, member) pair — i.e. no prior
+    // WorkoutPlanProgress existed before this call — is that signal: it
+    // means this is the first set/exercise this client has ever marked
+    // on this plan. Checked BEFORE the upsert below, since the upsert
+    // itself would otherwise make "did it already exist" unanswerable.
+    const isFirstActivityOnPlan = !(await WorkoutPlanProgress.exists({
+      planId: plan._id,
+      memberId: req.user._id,
+    }));
+
     // Preserve the existing note when this call doesn't include one
     // (e.g. a "Mark Done" tap that isn't editing notes) rather than
     // wiping it out on every set/done toggle.
@@ -269,6 +284,25 @@ const updateProgress = async (req, res, next) => {
       },
       { upsert: true }
     );
+
+    // Fire-and-forget, same pattern as authService.js's signup
+    // notification and studentIdController.js's submission notification
+    // — persisted (Section 12: "must not require the coach to be logged
+    // in at the exact moment... stored so the coach can see it when they
+    // return") via Notification.create, plus a best-effort real-time
+    // nudge if the coach happens to be online right now. A failure here
+    // must never fail the client's own progress save.
+    if (isFirstActivityOnPlan) {
+      Notification.create({
+        type: 'workout_started',
+        message: `${req.user.fullname} started the workout: ${plan.name}`,
+        userId: req.user._id,
+        recipientId: plan.coachId,
+        planId: plan._id,
+      })
+        .then((notification) => socketUtil.emitToUser(plan.coachId, 'notification:new', notification))
+        .catch((err) => console.error('Failed to create workout-started notification:', err.message));
+    }
 
     const progressDoc = await WorkoutPlanProgress.findOne({ planId: plan._id, memberId: req.user._id });
     res.json({ success: true, data: attachProgress(plan, progressDoc) });
