@@ -10,6 +10,8 @@ const { admin } = require('../middleware/adminMiddleware');
 router.use(protect, admin);
 
 router.get('/summary', analytics.summary);
+router.get('/membership-overview', analytics.membershipOverview);
+router.get('/visitors-breakdown', analytics.visitorsBreakdown);
 router.get('/sales', analytics.salesByRange);
 router.get('/income', analytics.incomeByPeriod);
 router.get('/income/by-package', analytics.incomeByPackage);

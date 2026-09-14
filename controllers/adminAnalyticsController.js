@@ -129,6 +129,122 @@ const PERIOD_LABELS = {
   yearly: 'Yearly Income',
 };
 
+function resolvePeriodStart(period, now) {
+  if (period === 'weekly') return startOfLocalWeek(now);
+  if (period === 'monthly') return startOfLocalMonth(now);
+  if (period === 'yearly') return startOfLocalYear(now);
+  return startOfLocalDay(now);
+}
+
+// A membership "approaching expiration" — active subscriptions whose
+// endDate falls within the next N days. This is a snapshot metric (not
+// scoped to the Statistics page's period toggle), same as how
+// "Expiring Memberships" reads as a standalone fact rather than a
+// range total.
+const EXPIRING_SOON_DAYS = 7;
+
+// Statistics.vue's "Expiring Memberships" and "Membership Growth" cards
+// (previously "New members"/"Current member", driven by `summary`
+// above). Kept as its own endpoint rather than folded into `summary`
+// since `summary` is always "today" and growth needs to follow the
+// page's own Daily/Weekly/Monthly/Yearly period toggle.
+exports.membershipOverview = async (req, res, next) => {
+  try {
+    const period = ['today', 'weekly', 'monthly', 'yearly'].includes(req.query.period)
+      ? req.query.period
+      : 'today';
+
+    const now = new Date();
+
+    const soonCutoff = new Date(now.getTime() + EXPIRING_SOON_DAYS * 24 * 60 * 60 * 1000);
+    const expiringMemberships = await Subscription.countDocuments({
+      status: 'active',
+      endDate: { $gte: now, $lte: soonCutoff },
+    });
+
+    // Net change in distinct active members between the start of the
+    // selected period and now. "Active at instant X" is read off
+    // startDate/endDate coverage directly (a subscription document
+    // whose window spans X), not the `status` field alone — status can
+    // lag behind a passed endDate until a background job runs (see the
+    // same reasoning in attendanceService.js's processMemberScan), so
+    // date coverage is the authoritative signal here too.
+    const periodStart = resolvePeriodStart(period, now);
+
+    const activeUserIdsNow = await Subscription.distinct('userId', {
+      startDate: { $lte: now },
+      endDate: { $gte: now },
+    });
+    const activeUserIdsAtPeriodStart = await Subscription.distinct('userId', {
+      startDate: { $lte: periodStart },
+      endDate: { $gte: periodStart },
+    });
+
+    const membershipGrowth = activeUserIdsNow.length - activeUserIdsAtPeriodStart.length;
+
+    res.json({
+      period,
+      expiringMemberships,
+      expiringSoonDays: EXPIRING_SOON_DAYS,
+      membershipGrowth,
+      activeNow: activeUserIdsNow.length,
+      activeAtPeriodStart: activeUserIdsAtPeriodStart.length,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Statistics.vue's "Visitors" donut. Previously computed client-side
+// from the full /admin/members list split only by studentPromoActive
+// (Student vs "Regular") — that's a membership-roster split, not an
+// actual visitor count, and had no concept of non-member walk-ins at
+// all. This instead reads real check-ins for the selected period from
+// Attendance, using the same conventions the Dashboard's Member/
+// Non-member attendance pie already relies on:
+//   - subjectType: 'member' scopes to member-side attendance (excludes
+//     coach/employee check-ins, which live under subjectType: 'employee').
+//   - a record with `userId` set is a member check-in; `memberType`
+//     ('Student' vs 'Regular', set at check-in time — see
+//     attendanceService.js's processMemberScan) distinguishes Student
+//     from the new "Member" (regular, non-student) category.
+//   - a record with no `userId` (guestName only) is a walk-in — the
+//     new "Non-member" category.
+exports.visitorsBreakdown = async (req, res, next) => {
+  try {
+    const period = ['today', 'weekly', 'monthly', 'yearly'].includes(req.query.period)
+      ? req.query.period
+      : 'today';
+
+    const now = new Date();
+    const start = resolvePeriodStart(period, now);
+    const end = endOfLocalDay(now);
+
+    const rows = await Attendance.aggregate([
+      { $match: { subjectType: 'member', createdAt: { $gte: start, $lte: end } } },
+      {
+        $group: {
+          _id: {
+            $cond: [
+              { $ifNull: ['$userId', false] },
+              { $cond: [{ $eq: ['$memberType', 'Student'] }, 'student', 'member'] },
+              'nonMember',
+            ],
+          },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const counts = { student: 0, member: 0, nonMember: 0 };
+    for (const row of rows) counts[row._id] = row.count;
+
+    res.json({ period, ...counts });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.incomeByPeriod = async (req, res, next) => {
   try {
     const period = ['today', 'weekly', 'monthly', 'yearly'].includes(req.query.period)
