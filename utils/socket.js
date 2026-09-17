@@ -1,4 +1,5 @@
 let io = null;
+const clientOrigins = require('../config/clientOrigins');
 
 // Room naming:
 //   - `user:<id>` — every connected socket joins its own room, so any
@@ -13,7 +14,7 @@ exports.init = (server) => {
     const jwt = require('jsonwebtoken');
     const User = require('../models/User');
 
-    io = new Server(server, { cors: { origin: process.env.CLIENT_URL || 'http://localhost:5173', methods: ['GET','POST'] } });
+    io = new Server(server, { cors: { origin: clientOrigins, methods: ['GET', 'POST'] } });
 
     // Any authenticated user (member or admin) may connect — each only
     // ever receives events addressed to their own `user:<id>` room, plus

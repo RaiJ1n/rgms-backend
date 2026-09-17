@@ -20,22 +20,15 @@ const clientOrigins = require('./config/clientOrigins');
 
 const app = express();
 
-// app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' || 'http:localhost:5175' , credentials: true }));
-const allowedOrigins = [
-  process.env.CLIENT_URL,
-  'http://localhost:5173',
-  'http://localhost:5175'
-].filter(Boolean);
-
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || clientOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error(`Origin ${origin} is not allowed by CORS`));
     }
   },
-  credentials: true
+  credentials: true,
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
