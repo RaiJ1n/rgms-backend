@@ -16,10 +16,27 @@ const classRoutes = require('./routes/classRoutes');
 const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
 const studentIdRoutes = require('./routes/studentIdRoutes'); // NEW
 const settingsRoutes = require('./routes/settingsRoutes'); // NEW — Social Accounts (#8)
+const clientOrigins = require('./config/clientOrigins');
 
 const app = express();
 
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' || 'http:localhost:5175' , credentials: true }));
+// app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' || 'http:localhost:5175' , credentials: true }));
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  'http://localhost:5173',
+  'http://localhost:5175'
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`Origin ${origin} is not allowed by CORS`));
+    }
+  },
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
