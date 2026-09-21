@@ -78,7 +78,19 @@ const updateProfile = async (req, res, next) => {
     // touch contact info.
     const contactFieldsTouched =
       (address !== undefined && address !== user.address) || (phone !== undefined && phone !== user.phone);
-    if (contactFieldsTouched && !user.privacyNoticeAcknowledged && !privacyNoticeAcknowledged) {
+    // Privacy Notice acknowledgment is a member (role 'user') consent
+    // flow — Section D1's whole point is gating what a MEMBER shares
+    // about themselves. This controller is reused for Admin's own
+    // profile (adminRoutes.js: PUT /admin/profile) since an admin is
+    // just a User document with role 'admin' — but an admin account is
+    // never shown the Privacy Notice modal and privacyNoticeAcknowledged
+    // defaults to false for every admin (it's never set at signup the
+    // way a member's is), so without this role check EVERY admin
+    // profile save that touched phone/address would 400 here, forever,
+    // with no way to clear it — exactly the "changes aren't saved"
+    // symptom reported. Same reasoning applies to the medical-fields
+    // gate and uploadProfilePhoto below.
+    if (user.role === 'user' && contactFieldsTouched && !user.privacyNoticeAcknowledged && !privacyNoticeAcknowledged) {
       return res.status(400).json({
         success: false,
         message: 'Please acknowledge the Privacy Notice before saving this information.',
@@ -118,7 +130,7 @@ const updateProfile = async (req, res, next) => {
     const medicalFieldsTouched = [medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes]
       .some((v) => v !== undefined);
     if (medicalFieldsTouched) {
-      if (!user.medicalConsentGiven && !medicalConsent) {
+      if (user.role === 'user' && !user.medicalConsentGiven && !medicalConsent) {
         return res.status(400).json({
           success: false,
           message: 'Please check the consent box before saving medical information.',
@@ -181,13 +193,15 @@ const uploadProfilePhoto = async (req, res, next) => {
     // Section D1: multer parses non-file form fields into req.body same
     // as a JSON request — 'true'/'false' arrive as strings here since
     // this is multipart/form-data, not JSON, hence the explicit === check.
-    if (!user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged !== 'true') {
+    // Same admin exemption as updateProfile above — an admin never sees
+    // the Privacy Notice modal, so this gate must not apply to them.
+    if (user.role === 'user' && !user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged !== 'true') {
       return res.status(400).json({
         success: false,
         message: 'Please acknowledge the Privacy Notice before uploading a photo.',
       });
     }
-    if (!user.privacyNoticeAcknowledged) {
+    if (!user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged === 'true') {
       user.privacyNoticeAcknowledged = true;
       user.privacyNoticeAcknowledgedAt = new Date();
     }
