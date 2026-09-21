@@ -69,7 +69,7 @@ router.put(
         // even reaches userController.
         const message =
           err.code === 'LIMIT_FILE_SIZE'
-            ? 'One of the files is too large. Maximum size is 5MB per file.'
+            ? 'One of the files is too large. Maximum size is 2MB per file.'
             : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE'
             ? `You can upload up to ${upload.MEDICAL_DOCUMENT_MAX_FILES} files at a time.`
             : err.message || 'Could not upload file.';

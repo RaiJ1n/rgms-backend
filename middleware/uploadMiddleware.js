@@ -1,18 +1,11 @@
 const multer = require('multer');
-const cloudinaryStorage = require('multer-storage-cloudinary');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
-const CloudinaryStorage =
-  cloudinaryStorage.CloudinaryStorage ||
-  cloudinaryStorage.default ||
-  cloudinaryStorage;
-
-// Run your existing Cloudinary configuration
-require('../config/cloudinary');
-
-// IMPORTANT:
-// multer-storage-cloudinary@2.2.1 expects the ROOT Cloudinary object
-// because internally it accesses cloudinary.v2.uploader
-const cloudinary = require('cloudinary');
+// Configured v2 instance — see config/cloudinary.js for why this is v2 and
+// not the root `require('cloudinary')` object. multer-storage-cloudinary@4
+// (the version pinned in package.json) calls
+// `cloudinary.uploader.upload_stream(...)` on exactly what it is given here.
+const cloudinary = require('../config/cloudinary');
 
 const storage = new CloudinaryStorage({
   cloudinary,
@@ -22,7 +15,11 @@ const storage = new CloudinaryStorage({
   },
 });
 
-const upload = multer({ storage });
+// 5MB cap on general-purpose uploads (profile photos, Student ID
+// photos) — this had no limit at all before, so an oversized file would
+// fail deep inside the Cloudinary upload with an opaque error instead
+// of a clean, fast validation message.
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
 
 // ---------------------------------------------------------
@@ -39,7 +36,7 @@ const medicalDocumentStorage = new CloudinaryStorage({
   },
 });
 
-const MEDICAL_DOCUMENT_MAX_BYTES = 5 * 1024 * 1024;
+const MEDICAL_DOCUMENT_MAX_BYTES = 2 * 1024 * 1024;
 const MEDICAL_DOCUMENT_MAX_FILES = 10;
 
 const medicalDocumentFileFilter = (req, file, cb) => {
