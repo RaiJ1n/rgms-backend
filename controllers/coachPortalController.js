@@ -3,6 +3,8 @@ const GymClass = require('../models/GymClass');
 const User = require('../models/User');
 const CoachRegistrationRequest = require('../models/CoachRegistrationRequest');
 const Notification = require('../models/Notification');
+const WorkoutPlan = require('../models/Workoutplan');
+const WorkoutPlanProgress = require('../models/WorkoutPlanProgress');
 const cloudinary = require('../config/cloudinary');
 const socketUtil = require('../utils/socket');
 // Shared with the member's own medical-document view (Section 4:
@@ -11,6 +13,9 @@ const socketUtil = require('../utils/socket');
 // one" helper rather than duplicating it, same reasoning as
 // adminController.getMemberMedicalDocument reusing it for the admin side.
 const { buildMedicalDocumentResponse } = require('./userController');
+const passwordChangeOtpService = require('../services/passwordChangeOtpService');
+const { generateOtp, hashOtp } = require('../utils/generateOtp');
+const emailService = require('../services/emailService');
 
 // Fire-and-forget Cloudinary cleanup, same helper/pattern as
 // userController.js's deleteCloudinaryImage — kept as a local copy here
@@ -179,8 +184,58 @@ const getMySettings = async (req, res, next) => {
       data: {
         email: req.coach.email,
         notificationEmail: req.coach.notificationEmail || '',
+        notificationEmailVerified: req.coach.notificationEmailVerified || false,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Send/Resend the notification-email ownership code (Coach Settings ->
+// Notification, Group 8). Sent to the CANDIDATE address itself
+// (req.body.email) rather than the coach's own account email, since
+// proving the coach can read mail at THAT address is the entire point.
+// Same 60s cooldown / 10-minute expiry convention as
+// passwordChangeOtpService, kept independent here since it tracks a
+// pending value the password flow has no equivalent of.
+const sendNotificationEmailOtp = async (req, res, next) => {
+  try {
+    const email = (req.body.email || '').trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Enter an email address first' });
+    }
+
+    const coach = await User.findById(req.coach._id);
+    if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
+
+    if (coach.notificationEmailOtpLastSentAt) {
+      const cooldownMs = 60 * 1000;
+      const elapsed = Date.now() - coach.notificationEmailOtpLastSentAt.getTime();
+      if (elapsed < cooldownMs) {
+        const waitSeconds = Math.ceil((cooldownMs - elapsed) / 1000);
+        return res.status(429).json({ success: false, message: `Please wait ${waitSeconds}s before requesting another code` });
+      }
+    }
+
+    const { otp, hashedOtp } = generateOtp();
+    coach.notificationEmailOtp = hashedOtp;
+    coach.notificationEmailOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    coach.notificationEmailOtpLastSentAt = new Date();
+    coach.notificationEmailPendingValue = email;
+    // A fresh code always resets verified state — the previously-saved
+    // address (if any) is untouched until Save is clicked with a
+    // matching, successfully-verified code.
+    coach.notificationEmailVerified = false;
+    await coach.save();
+
+    try {
+      await emailService.sendNotificationEmailOtpEmail(email, coach.fullname, otp);
+    } catch (err) {
+      return res.status(502).json({ success: false, message: 'Failed to send verification code. Please try again.' });
+    }
+
+    res.json({ success: true, message: `Verification code sent to ${email}` });
   } catch (error) {
     next(error);
   }
@@ -194,47 +249,96 @@ const updateMySettings = async (req, res, next) => {
     const coach = await User.findById(req.coach._id).select('-password');
     if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
 
-    const { notificationEmail } = req.body;
+    const { notificationEmail, otp } = req.body;
     // Empty string is valid here — it's how a coach clears the override
-    // and falls back to their login email for notifications.
+    // and falls back to their login email for notifications. Clearing
+    // needs no verification; setting/changing to a real address does.
     if (notificationEmail !== undefined) {
-      coach.notificationEmail = notificationEmail.trim().toLowerCase();
+      const normalized = notificationEmail.trim().toLowerCase();
+
+      if (!normalized) {
+        coach.notificationEmail = '';
+        coach.notificationEmailVerified = false;
+        coach.notificationEmailOtp = undefined;
+        coach.notificationEmailOtpExpires = undefined;
+        coach.notificationEmailOtpLastSentAt = undefined;
+        coach.notificationEmailPendingValue = undefined;
+      } else if (normalized === coach.notificationEmail && coach.notificationEmailVerified) {
+        // Unchanged from the already-verified value — nothing to do.
+      } else {
+        if (!otp) {
+          return res.status(400).json({ success: false, message: 'Please verify this email with the code sent to it first' });
+        }
+        if (
+          coach.notificationEmailPendingValue !== normalized ||
+          !coach.notificationEmailOtp ||
+          !coach.notificationEmailOtpExpires
+        ) {
+          return res
+            .status(400)
+            .json({ success: false, message: 'No verification code was requested for this email. Please click Send Code first.' });
+        }
+        if (coach.notificationEmailOtpExpires.getTime() < Date.now()) {
+          return res.status(400).json({ success: false, message: 'This code has expired. Please request a new one.' });
+        }
+        if (hashOtp(otp) !== coach.notificationEmailOtp) {
+          return res.status(400).json({ success: false, message: 'Invalid verification code' });
+        }
+
+        coach.notificationEmail = normalized;
+        coach.notificationEmailVerified = true;
+        // Single-use: clear the code so it can't be replayed.
+        coach.notificationEmailOtp = undefined;
+        coach.notificationEmailOtpExpires = undefined;
+        coach.notificationEmailOtpLastSentAt = undefined;
+        coach.notificationEmailPendingValue = undefined;
+      }
     }
 
     await coach.save();
     res.json({
       success: true,
       message: 'Settings updated',
-      data: { email: coach.email, notificationEmail: coach.notificationEmail || '' },
+      data: {
+        email: coach.email,
+        notificationEmail: coach.notificationEmail || '',
+        notificationEmailVerified: coach.notificationEmailVerified || false,
+      },
     });
   } catch (error) {
     next(error);
   }
 };
 
+// Send/Resend the verification code to the coach's own login email.
+// Same OTP fields, cooldown and email template as Admin Settings' and
+// the member's "Send Code" flow — see passwordChangeOtpService.js.
+const sendMyPasswordChangeOtp = async (req, res, next) => {
+  try {
+    const result = await passwordChangeOtpService.requestPasswordChangeOtp(req.coach._id);
+    res.json({ success: true, message: `Verification code sent to ${result.sentTo}`, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Same current-password-required pattern as userController's
-// change-password for members — a coach proves they know the current
-// password before setting a new one. Unlike Admin Settings, no OTP step
-// here; that OTP flow is specific to AdminSettings.vue's own design and
-// isn't part of this spec for coaches.
+// change-password for members, now also requiring a verified OTP sent
+// to the coach's email before the change is allowed — same
+// passwordChangeOtpService used by the member flow (Admin Settings has
+// its own separate copy of this same pattern in adminService.js).
 const changeMyPassword = async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const { currentPassword, newPassword } = req.body;
-
-    const coach = await User.findById(req.coach._id);
-    if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
-
-    const matches = await coach.matchPassword(currentPassword);
-    if (!matches) {
-      return res.status(400).json({ success: false, message: 'Current password is incorrect' });
-    }
-
-    coach.password = newPassword; // re-hashed by the User pre('save') hook
-    coach.lastPasswordChange = new Date();
-    await coach.save();
+    const { currentPassword, newPassword, otp } = req.body;
+    await passwordChangeOtpService.verifyAndChangePassword({
+      userId: req.coach._id,
+      currentPassword,
+      newPassword,
+      otp,
+    });
 
     res.json({ success: true, message: 'Password updated successfully' });
   } catch (error) {
@@ -340,6 +444,65 @@ const getClientDetail = async (req, res, next) => {
     safeClient.clientSince = relationship.reviewedAt || relationship.createdAt;
 
     res.json({ success: true, data: safeClient });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Powers the "Current Workout" tab on Coach -> Client Details (Group 7):
+// every plan THIS coach has assigned to this client, each with its
+// components (name/sets/reps, snapshotted on the plan) and, alongside
+// each component, that client's own progress entry — specifically the
+// free-text notes they've left against it (WorkoutPlanProgress.entries),
+// since those notes are what the spec means by "Notes left by the
+// member/client". Re-checks the same accepted-client relationship as
+// getClientDetail/getClientMedicalDocument, independently, for the same
+// "each request re-verifies access on its own" reason.
+const getClientWorkout = async (req, res, next) => {
+  try {
+    const relationship = await assertAcceptedClient(req.coach._id, req.params.id);
+    if (!relationship) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const plans = await WorkoutPlan.find({ coachId: req.coach._id, assignedTo: req.params.id })
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    if (!plans.length) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const progressDocs = await WorkoutPlanProgress.find({
+      planId: { $in: plans.map((p) => p._id) },
+      memberId: req.params.id,
+    }).lean();
+    const progressByPlan = new Map(progressDocs.map((doc) => [doc.planId.toString(), doc]));
+
+    const data = plans.map((plan) => {
+      const progress = progressByPlan.get(plan._id.toString());
+      const entriesByComponent = new Map((progress?.entries || []).map((e) => [e.componentId.toString(), e]));
+      return {
+        _id: plan._id,
+        name: plan.name,
+        type: plan.type,
+        duration: plan.duration,
+        description: plan.description,
+        components: (plan.components || []).map((c) => {
+          const entry = entriesByComponent.get(c._id.toString());
+          return {
+            _id: c._id,
+            name: c.name,
+            sets: c.sets,
+            reps: c.reps,
+            done: entry?.done || false,
+            notes: entry?.notes || '',
+          };
+        }),
+      };
+    });
+
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -482,11 +645,14 @@ module.exports = {
   updateMyProfile,
   uploadMyProfilePhoto,
   getMySettings,
+  sendNotificationEmailOtp,
   updateMySettings,
+  sendMyPasswordChangeOtp,
   changeMyPassword,
   getMyRequests,
   getMyClients,
   getClientDetail,
+  getClientWorkout,
   getClientMedicalDocument,
   acceptRequest,
   rejectRequest,

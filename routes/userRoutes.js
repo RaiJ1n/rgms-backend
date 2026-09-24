@@ -83,12 +83,14 @@ router.put(
 router.get('/profile/medical-document/:docId', userController.viewMedicalDocument);
 router.delete('/profile/medical-document/:docId', userController.deleteMedicalDocument);
 router.get('/profile/social', userController.getSocialAccounts);
+router.post('/security/send-otp', userController.sendPasswordChangeOtp);
 router.put(
   '/change-password',
   [
     body('currentPassword').notEmpty().withMessage('Current password is required'),
     body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
     body('confirmPassword').notEmpty().withMessage('Confirm password is required').custom((value, { req }) => value === req.body.newPassword).withMessage('Passwords do not match'),
+    body('otp').notEmpty().withMessage('Verification code is required'),
   ],
   userController.changePassword
 );

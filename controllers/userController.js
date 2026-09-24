@@ -6,6 +6,7 @@ const Attendance = require('../models/Attendance');
 const Subscription = require('../models/Subscription');
 const authService = require('../services/authService');
 const emailService = require('../services/emailService');
+const passwordChangeOtpService = require('../services/passwordChangeOtpService');
 
 // Section D1: standalone acknowledge endpoint, for gated actions that
 // don't have a convenient body field of their own to carry the flag on
@@ -383,20 +384,30 @@ const getSocialAccounts = async (req, res, next) => {
   }
 };
 
+// Send/Resend the verification code to the member's own registered
+// email. Same OTP fields, cooldown and email template as Admin
+// Settings' "Send Code" flow — see passwordChangeOtpService.js.
+const sendPasswordChangeOtp = async (req, res, next) => {
+  try {
+    const result = await passwordChangeOtpService.requestPasswordChangeOtp(req.user._id);
+    res.json({ success: true, message: `Verification code sent to ${result.sentTo}`, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const changePassword = async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const { currentPassword, newPassword } = req.body;
-    const user = await User.findById(req.user._id);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    const isMatch = await user.matchPassword(currentPassword);
-    if (!isMatch) return res.status(401).json({ success: false, message: 'Current password is incorrect' });
-
-    user.password = newPassword; // pre-save hook rehashes
-    await user.save();
+    const { currentPassword, newPassword, otp } = req.body;
+    await passwordChangeOtpService.verifyAndChangePassword({
+      userId: req.user._id,
+      currentPassword,
+      newPassword,
+      otp,
+    });
 
     res.json({ success: true, message: 'Password updated successfully' });
   } catch (error) {
@@ -507,6 +518,13 @@ const getDashboardSummary = async (req, res, next) => {
               planName: subscription.planId?.name || null,
               startDate: subscription.startDate,
               endDate: subscription.endDate,
+              // Session Remaining (Group 3): sessionsUsed is deducted by
+              // subscriptionService.recordAttendanceSession on RFID
+              // check-ins and manual attendance entries (never for a Day
+              // Pass plan). The frontend derives the total from the same
+              // start/end date span it already uses for the "X/Y days"
+              // progress bar, so this is the only extra figure it needs.
+              sessionsUsed: subscription.sessionsUsed || 0,
             }
           : null,
         activeStreakWeeks: streakWeeks,
@@ -531,6 +549,7 @@ module.exports = {
   viewMedicalDocument,
   deleteMedicalDocument,
   getSocialAccounts,
+  sendPasswordChangeOtp,
   changePassword,
   getSubscriptions,
   getDashboardSummary,

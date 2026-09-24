@@ -28,6 +28,19 @@ const subscriptionSchema = new mongoose.Schema({
     enum: ['active', 'inactive', 'expired'], 
     default: 'inactive' },
 
+  // Membership/session deduction (Group 3, Section "Membership Session
+  // Deduction"): incremented by subscriptionService.recordAttendanceSession
+  // whenever the member is granted gym access via an RFID tap or a
+  // manually-recorded attendance entry — never for a Day Pass plan (a
+  // 1-day/1-session plan has nothing meaningful left to track after its
+  // single visit). The *total* sessions a plan grants is derived from
+  // the subscription's own day span (endDate - startDate in days) —
+  // the same figure Dashboard.vue already computes for its "X/Y days"
+  // progress bar — rather than a separate stored field, so there's only
+  // one place (the date range) that defines how long/how many visits a
+  // plan is worth.
+  sessionsUsed: { type: Number, default: 0 },
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('Subscription', subscriptionSchema);

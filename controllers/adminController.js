@@ -691,6 +691,15 @@ const createManualAttendance = async (req, res, next) => {
     });
     await attendance.populate('userId', 'fullname email phone');
 
+    // Session deduction (Group 3): only when this attendance entry is
+    // tied to a real member account — a free-text guestName has no
+    // subscription to deduct from. No-ops for a Day Pass plan or a
+    // member with no subscription on file — see
+    // subscriptionService.recordAttendanceSession.
+    if (user) {
+      await subscriptionService.recordAttendanceSession(user._id);
+    }
+
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('attendance', {
       type: 'checkin',

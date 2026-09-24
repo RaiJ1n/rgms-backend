@@ -39,6 +39,7 @@ router.put('/profile/photo', upload.single('photo'), coachPortalController.uploa
 // Settings (Section 1) — notification email + password, separate from
 // Personal Information above.
 router.get('/settings', coachPortalController.getMySettings);
+router.post('/settings/notification-email/send-otp', coachPortalController.sendNotificationEmailOtp);
 router.put(
   '/settings',
   [
@@ -49,12 +50,14 @@ router.put(
   ],
   coachPortalController.updateMySettings
 );
+router.post('/security/send-otp', coachPortalController.sendMyPasswordChangeOtp);
 router.put(
   '/change-password',
   [
     body('currentPassword').notEmpty().withMessage('Current password is required'),
     body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
     body('confirmPassword').custom((value, { req }) => value === req.body.newPassword).withMessage('Passwords do not match'),
+    body('otp').notEmpty().withMessage('Verification code is required'),
   ],
   coachPortalController.changeMyPassword
 );
@@ -70,6 +73,7 @@ router.get('/clients', coachPortalController.getMyClients);
 // coachPortalController.assertAcceptedClient) rather than trusting
 // that only this coach's own frontend would ever request this id.
 router.get('/clients/:id', coachPortalController.getClientDetail);
+router.get('/clients/:id/workout', coachPortalController.getClientWorkout);
 router.get('/clients/:id/medical-document/:docId', coachPortalController.getClientMedicalDocument);
 
 // ---- Exercise library (Section E3) — private per-coach ----
