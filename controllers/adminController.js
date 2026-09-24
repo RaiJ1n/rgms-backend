@@ -691,6 +691,15 @@ const createManualAttendance = async (req, res, next) => {
     });
     await attendance.populate('userId', 'fullname email phone');
 
+    // Session deduction (Group 3): only when this attendance entry is
+    // tied to a real member account — a free-text guestName has no
+    // subscription to deduct from. No-ops for a Day Pass plan or a
+    // member with no subscription on file — see
+    // subscriptionService.recordAttendanceSession.
+    if (user) {
+      await subscriptionService.recordAttendanceSession(user._id);
+    }
+
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('attendance', {
       type: 'checkin',
@@ -800,6 +809,49 @@ const rejectStudentId = async (req, res, next) => {
   }
 };
 
+// The other half of approveStudentId: lets an admin undo a previous
+// approval — e.g. it turns out the ID wasn't genuine, or eligibility
+// has lapsed — sending the submission back to 'pending' so it shows up
+// for re-review rather than staying stuck as a permanent "Verified"
+// with no way back. Also switches the student discount off, since an
+// unverified ID shouldn't keep student pricing active (mirrors
+// approveStudentId turning it on). Only ever operates on the most
+// recent APPROVED submission for this member — never a 'rejected' one,
+// which has its own distinct meaning and shouldn't be resurrected as
+// 'pending' by this action.
+const unverifyStudentId = async (req, res, next) => {
+  try {
+    const user = await User.findOne({ _id: req.params.id, role: 'user' });
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    const submission = await StudentVerification.findOne({ userId: user._id, status: 'approved' }).sort({
+      createdAt: -1,
+    });
+    if (!submission) {
+      return res.status(400).json({ success: false, message: 'This member has no verified Student ID to unverify' });
+    }
+
+    submission.status = 'pending';
+    submission.reviewedBy = undefined;
+    submission.reviewNote = undefined;
+    await submission.save();
+
+    user.studentPromoActive = false;
+    await user.save();
+
+    socketUtil.emitToAdmins('stats:refresh');
+    socketUtil.emitToAdmins('member:updated', { _id: user._id });
+
+    res.json({
+      success: true,
+      message: 'Student ID returned to pending review',
+      data: { submission, user },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ---- Admin Settings: password-change OTP ----
 // req.user._id is the admin's own id here — protect+admin (applied to
 // this whole router in adminRoutes.js) guarantees that.
@@ -857,6 +909,7 @@ module.exports = {
   getStudentIdSubmissions,
   approveStudentId,
   rejectStudentId,
+  unverifyStudentId,
   createManualAttendance,
   sendPasswordChangeOtp,
   changePassword,

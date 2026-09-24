@@ -69,7 +69,7 @@ router.put(
         // even reaches userController.
         const message =
           err.code === 'LIMIT_FILE_SIZE'
-            ? 'One of the files is too large. Maximum size is 5MB per file.'
+            ? 'One of the files is too large. Maximum size is 2MB per file.'
             : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE'
             ? `You can upload up to ${upload.MEDICAL_DOCUMENT_MAX_FILES} files at a time.`
             : err.message || 'Could not upload file.';
@@ -83,12 +83,14 @@ router.put(
 router.get('/profile/medical-document/:docId', userController.viewMedicalDocument);
 router.delete('/profile/medical-document/:docId', userController.deleteMedicalDocument);
 router.get('/profile/social', userController.getSocialAccounts);
+router.post('/security/send-otp', userController.sendPasswordChangeOtp);
 router.put(
   '/change-password',
   [
     body('currentPassword').notEmpty().withMessage('Current password is required'),
     body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
     body('confirmPassword').notEmpty().withMessage('Confirm password is required').custom((value, { req }) => value === req.body.newPassword).withMessage('Passwords do not match'),
+    body('otp').notEmpty().withMessage('Verification code is required'),
   ],
   userController.changePassword
 );

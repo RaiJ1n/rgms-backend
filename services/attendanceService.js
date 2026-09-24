@@ -5,6 +5,7 @@ const Subscription = require('../models/Subscription');
 const Coach = require('../models/Coach');
 const AuditLog = require('../models/AuditLog');
 const socketUtil = require('../utils/socket');
+const subscriptionService = require('./subscriptionService');
 const { getScanMessage } = require('../utils/scanMessages');
 const { startOfLocalDay } = require('../utils/localDate');
 
@@ -284,6 +285,12 @@ async function processMemberScan(card, now) {
       // so fall back to the account's existing promo flag.
       memberType: user.studentPromoActive ? 'Student' : 'Regular',
     });
+
+    // Session deduction (Group 3): only on a genuine new check-in, never
+    // on the checkout branch above — one RFID-granted visit deducts
+    // exactly one session, regardless of the check-in/check-out pair it
+    // produces. No-ops for a Day Pass plan — see recordAttendanceSession.
+    await subscriptionService.recordAttendanceSession(user._id);
   }
 
   await AuditLog.create({

@@ -75,12 +75,35 @@ const userSchema = new mongoose.Schema({
   // Settings-page-only field (Section 1, coach Settings) — separate from
   // the coach's login `email` above. This is purely where the coach
   // wants notification mail (client requests, etc.) delivered; it is
-  // NEVER used for authentication and changing it never touches the
-  // login email or requires re-verification, unlike changing `email`
-  // does elsewhere in this schema. Empty string means "not set" — falls
-  // back to the coach's login email wherever notifications are sent,
-  // same empty-string convention as facebookUrl/instagramUrl below.
+  // NEVER used for authentication, and changing it never touches the
+  // login email. Empty string means "not set" — falls back to the
+  // coach's login email wherever notifications are sent, same
+  // empty-string convention as facebookUrl/instagramUrl below.
+  // Group 8 added an email-ownership check before a new value can be
+  // saved here (see the OTP fields immediately below) — the coach must
+  // prove they can read mail at the new address before it's accepted,
+  // the same way a real email-change flow would.
   notificationEmail: { type: String, trim: true, lowercase: true, default: '' },
+  // Notification-email verification OTP (Coach Settings -> Notification,
+  // Group 8). Deliberately separate from passwordChangeOtp* above: that
+  // one verifies the coach still controls their EXISTING account email;
+  // this one verifies they control a NEW, not-yet-saved candidate
+  // address, so it needs somewhere to hold that candidate until the
+  // code is confirmed. Same hash-then-store convention — only the
+  // sha256 hash of the code is ever persisted.
+  notificationEmailOtp: String,
+  notificationEmailOtpExpires: Date,
+  notificationEmailOtpLastSentAt: Date,
+  // The address the pending code was actually sent to. Verifying only
+  // succeeds while the form's current value still matches this — if the
+  // coach edits the email again after requesting a code, the old code
+  // can't be used to verify the new, unsent-to address.
+  notificationEmailPendingValue: String,
+  // Set true once that pending value has been confirmed via OTP; cleared
+  // back to false the moment the coach edits the email again, so a
+  // previously-verified address can't be silently swapped for an
+  // unverified one without re-verifying.
+  notificationEmailVerified: { type: Boolean, default: false },
   // Admin-controlled public visibility — whether this coach shows up on
   // the Client/User "Coaches" page. Defaults to true (visible) so a
   // freshly admin-created coach account is bookable right away without

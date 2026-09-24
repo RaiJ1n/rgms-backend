@@ -7,4 +7,6 @@ module.exports = [...new Set([
   ...configuredOrigins,
   'http://localhost:5173',
   'http://localhost:5175',
+  'https://rgms.vercel.app',
+  'https://www.remerfitnessgym.tech',
 ])];

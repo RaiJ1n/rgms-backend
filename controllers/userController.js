@@ -6,6 +6,7 @@ const Attendance = require('../models/Attendance');
 const Subscription = require('../models/Subscription');
 const authService = require('../services/authService');
 const emailService = require('../services/emailService');
+const passwordChangeOtpService = require('../services/passwordChangeOtpService');
 
 // Section D1: standalone acknowledge endpoint, for gated actions that
 // don't have a convenient body field of their own to carry the flag on
@@ -78,7 +79,19 @@ const updateProfile = async (req, res, next) => {
     // touch contact info.
     const contactFieldsTouched =
       (address !== undefined && address !== user.address) || (phone !== undefined && phone !== user.phone);
-    if (contactFieldsTouched && !user.privacyNoticeAcknowledged && !privacyNoticeAcknowledged) {
+    // Privacy Notice acknowledgment is a member (role 'user') consent
+    // flow — Section D1's whole point is gating what a MEMBER shares
+    // about themselves. This controller is reused for Admin's own
+    // profile (adminRoutes.js: PUT /admin/profile) since an admin is
+    // just a User document with role 'admin' — but an admin account is
+    // never shown the Privacy Notice modal and privacyNoticeAcknowledged
+    // defaults to false for every admin (it's never set at signup the
+    // way a member's is), so without this role check EVERY admin
+    // profile save that touched phone/address would 400 here, forever,
+    // with no way to clear it — exactly the "changes aren't saved"
+    // symptom reported. Same reasoning applies to the medical-fields
+    // gate and uploadProfilePhoto below.
+    if (user.role === 'user' && contactFieldsTouched && !user.privacyNoticeAcknowledged && !privacyNoticeAcknowledged) {
       return res.status(400).json({
         success: false,
         message: 'Please acknowledge the Privacy Notice before saving this information.',
@@ -118,7 +131,7 @@ const updateProfile = async (req, res, next) => {
     const medicalFieldsTouched = [medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes]
       .some((v) => v !== undefined);
     if (medicalFieldsTouched) {
-      if (!user.medicalConsentGiven && !medicalConsent) {
+      if (user.role === 'user' && !user.medicalConsentGiven && !medicalConsent) {
         return res.status(400).json({
           success: false,
           message: 'Please check the consent box before saving medical information.',
@@ -181,13 +194,15 @@ const uploadProfilePhoto = async (req, res, next) => {
     // Section D1: multer parses non-file form fields into req.body same
     // as a JSON request — 'true'/'false' arrive as strings here since
     // this is multipart/form-data, not JSON, hence the explicit === check.
-    if (!user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged !== 'true') {
+    // Same admin exemption as updateProfile above — an admin never sees
+    // the Privacy Notice modal, so this gate must not apply to them.
+    if (user.role === 'user' && !user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged !== 'true') {
       return res.status(400).json({
         success: false,
         message: 'Please acknowledge the Privacy Notice before uploading a photo.',
       });
     }
-    if (!user.privacyNoticeAcknowledged) {
+    if (!user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged === 'true') {
       user.privacyNoticeAcknowledged = true;
       user.privacyNoticeAcknowledgedAt = new Date();
     }
@@ -369,20 +384,30 @@ const getSocialAccounts = async (req, res, next) => {
   }
 };
 
+// Send/Resend the verification code to the member's own registered
+// email. Same OTP fields, cooldown and email template as Admin
+// Settings' "Send Code" flow — see passwordChangeOtpService.js.
+const sendPasswordChangeOtp = async (req, res, next) => {
+  try {
+    const result = await passwordChangeOtpService.requestPasswordChangeOtp(req.user._id);
+    res.json({ success: true, message: `Verification code sent to ${result.sentTo}`, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const changePassword = async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const { currentPassword, newPassword } = req.body;
-    const user = await User.findById(req.user._id);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    const isMatch = await user.matchPassword(currentPassword);
-    if (!isMatch) return res.status(401).json({ success: false, message: 'Current password is incorrect' });
-
-    user.password = newPassword; // pre-save hook rehashes
-    await user.save();
+    const { currentPassword, newPassword, otp } = req.body;
+    await passwordChangeOtpService.verifyAndChangePassword({
+      userId: req.user._id,
+      currentPassword,
+      newPassword,
+      otp,
+    });
 
     res.json({ success: true, message: 'Password updated successfully' });
   } catch (error) {
@@ -493,6 +518,13 @@ const getDashboardSummary = async (req, res, next) => {
               planName: subscription.planId?.name || null,
               startDate: subscription.startDate,
               endDate: subscription.endDate,
+              // Session Remaining (Group 3): sessionsUsed is deducted by
+              // subscriptionService.recordAttendanceSession on RFID
+              // check-ins and manual attendance entries (never for a Day
+              // Pass plan). The frontend derives the total from the same
+              // start/end date span it already uses for the "X/Y days"
+              // progress bar, so this is the only extra figure it needs.
+              sessionsUsed: subscription.sessionsUsed || 0,
             }
           : null,
         activeStreakWeeks: streakWeeks,
@@ -517,6 +549,7 @@ module.exports = {
   viewMedicalDocument,
   deleteMedicalDocument,
   getSocialAccounts,
+  sendPasswordChangeOtp,
   changePassword,
   getSubscriptions,
   getDashboardSummary,

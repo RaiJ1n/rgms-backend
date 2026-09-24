@@ -158,4 +158,32 @@ const getMySubscription = async (userId) => {
   return Subscription.findOne({ userId }).sort({ endDate: -1 }).populate('planId');
 };
 
-module.exports = { getAllPlans, createSubscription, getMySubscription };
+// A plan grants unlimited-looking access for exactly 1 day (durationValue
+// 1 / durationUnit 'day') — the "Daily"/Day Pass plan seeded above. It's
+// identified by its actual duration, not by name, so an admin renaming
+// the plan later doesn't silently break this check.
+const isDayPassPlan = (plan) => plan?.durationValue === 1 && plan?.durationUnit === 'day';
+
+// Deducts one membership/session from the member's current subscription.
+// Called from exactly two places, per the spec: attendanceService.js's
+// processMemberScan (an RFID tap that opens a NEW attendance record —
+// i.e. a check-in, not a check-out) and adminController.js's
+// createManualAttendance (an admin manually adding a member to
+// attendance). A Day Pass plan is deliberately left untouched — nothing
+// to track for a single-visit pass. Silently no-ops (rather than
+// throwing) if the member has no subscription at all, since callers of
+// this are logging attendance either way and a missing/lapsed
+// subscription shouldn't block that — same "attendance still gets
+// recorded" behavior createManualAttendance already had before session
+// tracking existed.
+const recordAttendanceSession = async (userId) => {
+  const subscription = await Subscription.findOne({ userId }).sort({ endDate: -1 }).populate('planId');
+  if (!subscription) return null;
+  if (isDayPassPlan(subscription.planId)) return subscription;
+
+  subscription.sessionsUsed = (subscription.sessionsUsed || 0) + 1;
+  await subscription.save();
+  return subscription;
+};
+
+module.exports = { getAllPlans, createSubscription, getMySubscription, recordAttendanceSession, isDayPassPlan };

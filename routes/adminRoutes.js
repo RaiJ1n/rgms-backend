@@ -114,6 +114,11 @@ router.put(
   [body('studentPromoActive').isBoolean().withMessage('studentPromoActive must be true or false')],
   adminController.setStudentPromoActive
 );
+// Undo a previous Student ID approval for this member, returning it to
+// pending review (see unverifyStudentId's comment in adminController.js
+// for why this is member-scoped rather than submission-id-scoped like
+// approve/reject below).
+router.put('/members/:id/student-id/unverify', adminController.unverifyStudentId);
 router.delete('/members/:id', adminController.deleteMember);
 
 router.get('/notifications', adminController.getNotifications);
