@@ -246,9 +246,20 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
     );
   }
 
+  // Already connected to this exact port at this baud rate — return the
+  // current status instead of closing + reopening the same port. The
+  // close/reopen cycle briefly releases the OS handle and the immediate
+  // re-open can fail with EBUSY/access-denied (surfaced as 409), which
+  // is exactly the self-inflicted "stuck selector" conflict: the
+  // service ends up disconnected even though nothing actually changed.
+  if (serialPort && serialPort.isOpen && serialPort.path === requestedPath && currentBaudRate === baudRate) {
+    return exports.getStatus();
+  }
+
   await closeCurrentPort();
 
-  await new Promise((resolve, reject) => {
+  try {
+    await new Promise((resolve, reject) => {
     const candidate = new SerialPort({ path: requestedPath, baudRate, autoOpen: false });
 
     candidate.open((err) => {
@@ -298,6 +309,21 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
       resolve();
     });
   });
+  } catch (err) {
+    // Record the failure and broadcast it so every admin UI syncs to
+    // the real (disconnected) state instead of going stale. The
+    // service is intentionally left disconnected here — the old port
+    // was already closed above and the new open failed — so the next
+    // GET /status reflects reality and the frontend Port Selector can
+    // retry rather than sitting on a phantom connection.
+    lastError = err?.message || 'Failed to open the serial port.';
+    try {
+      emitStatus();
+    } catch {
+      // Non-fatal: emitting to sockets must never mask the real error.
+    }
+    throw err;
+  }
 
   // Persist by USB metadata, not just the COM string — see
   // portMatchesConfig() for why that matters on the next startup.
@@ -309,6 +335,21 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
     baudRate,
   });
 
+  emitStatus();
+  return exports.getStatus();
+};
+
+// ============================================================================
+// EXPORT: Disconnect the current serial port on admin request
+// ============================================================================
+// Backs POST /api/rfid/disconnect. Lets the admin cleanly release the
+// current port before picking another one, instead of relying solely
+// on connectToPort()'s implicit close. Idempotent: disconnecting while
+// already disconnected just returns the current (disconnected) status.
+exports.disconnectPort = async () => {
+  await closeCurrentPort();
+  parser = null;
+  lastConnectedDevice = null;
   emitStatus();
   return exports.getStatus();
 };

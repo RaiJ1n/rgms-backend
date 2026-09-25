@@ -267,6 +267,18 @@ exports.connectPort = async (req, res, next) => {
   }
 };
 
+exports.disconnectPort = async (req, res, next) => {
+  try {
+    const status = await rfidService.disconnectPort();
+    res.json({ success: true, message: 'RFID disconnected', data: status });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ success: false, message: err.message });
+    }
+    next(err);
+  }
+};
+
 exports.setRegistrationMode = async (req, res, next) => {
   try {
     const { enabled } = req.body;
