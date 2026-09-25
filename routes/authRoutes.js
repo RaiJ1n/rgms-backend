@@ -3,9 +3,33 @@ const { body } = require('express-validator');
 const authController = require('../controllers/authController');
 const oauthController = require('../controllers/oauthController');
 const passport = require('../config/passport');
+const clientOrigins = require('../config/clientOrigins');
 const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
+
+const CLIENT_URL = clientOrigins[0] || 'http://localhost:5173';
+
+// Google/Facebook strategies are only registered in config/passport.js
+// when their env vars are present. Without this guard, clicking the
+// button when a provider isn't configured hits
+// passport.authenticate('<provider>') for a strategy that was never
+// registered, which throws synchronously ("Unknown authentication
+// strategy") and surfaces as a raw 500 instead of taking the user back
+// to the login page with an explanation — the same friendly-redirect
+// treatment callbackHandler already gives every other OAuth failure.
+function requireProviderConfigured(provider, isConfigured) {
+  return (req, res, next) => {
+    if (!isConfigured) {
+      const params = new URLSearchParams({ oauthError: '1', provider, reason: 'not_configured' });
+      return res.redirect(`${CLIENT_URL}/login?${params.toString()}`);
+    }
+    next();
+  };
+}
+
+const isGoogleConfigured = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+const isFacebookConfigured = Boolean(process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET);
 
 // ---- Google / Facebook OAuth ----
 // Same underlying flow serves both the Login and Sign Up pages — the
@@ -14,10 +38,18 @@ const router = express.Router();
 // sign-in vs. conflict, not the page the user clicked from. See
 // oauthController.js for the callback/exchange/link handlers and
 // oauthService.js for that decision logic.
-router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'], session: false }));
+router.get(
+  '/google',
+  requireProviderConfigured('google', isGoogleConfigured),
+  passport.authenticate('google', { scope: ['profile', 'email'], session: false })
+);
 router.get('/google/callback', oauthController.googleCallback);
 
-router.get('/facebook', passport.authenticate('facebook', { scope: ['email'], session: false }));
+router.get(
+  '/facebook',
+  requireProviderConfigured('facebook', isFacebookConfigured),
+  passport.authenticate('facebook', { scope: ['email'], session: false })
+);
 router.get('/facebook/callback', oauthController.facebookCallback);
 
 // Trades the one-time code from the /oauth/callback redirect for the
