@@ -1,17 +1,17 @@
-const multer = require('multer');
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const multer = require("multer");
+const CloudinaryStorage = require("multer-storage-cloudinary");
 
 // Configured v2 instance — see config/cloudinary.js for why this is v2 and
-// not the root `require('cloudinary')` object. multer-storage-cloudinary@4
-// (the version pinned in package.json) calls
+// not the root `require('cloudinary')` object. multer-storage-cloudinary@2
+// calls
 // `cloudinary.uploader.upload_stream(...)` on exactly what it is given here.
-const cloudinary = require('../config/cloudinary');
+const cloudinary = require("../config/cloudinary");
 
-const storage = new CloudinaryStorage({
+const storage = CloudinaryStorage({
   cloudinary,
   params: {
-    folder: 'rgms',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    folder: "rgms",
+    allowed_formats: ["jpg", "jpeg", "png", "webp"],
   },
 });
 
@@ -21,18 +21,17 @@ const storage = new CloudinaryStorage({
 // of a clean, fast validation message.
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
-
 // ---------------------------------------------------------
 // Medical document uploader
 // ---------------------------------------------------------
 
-const medicalDocumentStorage = new CloudinaryStorage({
+const medicalDocumentStorage = CloudinaryStorage({
   cloudinary,
   params: {
-    folder: 'rgms/medical',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
-    resource_type: 'auto',
-    type: 'authenticated',
+    folder: "rgms/medical",
+    allowed_formats: ["jpg", "jpeg", "png", "pdf"],
+    resource_type: "auto",
+    type: "authenticated",
   },
 });
 
@@ -41,15 +40,15 @@ const MEDICAL_DOCUMENT_MAX_FILES = 10;
 
 const medicalDocumentFileFilter = (req, file, cb) => {
   const allowedMimeTypes = [
-    'image/jpeg',
-    'image/jpg',
-    'image/png',
-    'application/pdf',
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "application/pdf",
   ];
 
   if (!allowedMimeTypes.includes(file.mimetype)) {
     return cb(
-      new Error('Invalid file type. Please upload a JPG, PNG, or PDF.')
+      new Error("Invalid file type. Please upload a JPG, PNG, or PDF."),
     );
   }
 
