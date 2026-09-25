@@ -113,5 +113,6 @@ router.put(
   ],
   workoutPlanController.updateProgress
 );
+router.post('/workout-plans/:id/new-day', workoutPlanController.resetDailyProgress);
 
 module.exports = router;

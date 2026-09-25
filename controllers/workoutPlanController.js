@@ -311,6 +311,31 @@ const updateProgress = async (req, res, next) => {
   }
 };
 
+// Start a new daily session: archive current entries into history and
+// clear them so the workout becomes available again. History is
+// preserved; nothing is deleted.
+const resetDailyProgress = async (req, res, next) => {
+  try {
+    const plan = await WorkoutPlan.findOne({ _id: req.params.id, assignedTo: req.user._id });
+    if (!plan) return res.status(404).json({ success: false, message: 'Workout plan not found' });
+
+    const progressDoc = await WorkoutPlanProgress.findOne({ planId: plan._id, memberId: req.user._id });
+    if (!progressDoc || !progressDoc.entries.length) {
+      return res.json({ success: true, message: 'No progress to reset', data: attachProgress(plan, progressDoc) });
+    }
+
+    progressDoc.history = progressDoc.history || [];
+    progressDoc.history.push({ date: new Date(), entries: progressDoc.entries });
+    progressDoc.entries = [];
+    progressDoc.lastResetAt = new Date();
+    await progressDoc.save();
+
+    res.json({ success: true, message: 'New daily session started', data: attachProgress(plan, progressDoc) });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getMyPlans,
   createPlan,
@@ -319,4 +344,5 @@ module.exports = {
   getMyAssignedPlans,
   getMyAssignedPlanDetail,
   updateProgress,
+  resetDailyProgress,
 };

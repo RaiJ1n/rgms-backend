@@ -331,6 +331,9 @@ function buildMedicalDocumentResponse(medicalDocument) {
 // one document by :docId now that a member can have several on file.
 const viewMedicalDocument = async (req, res, next) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.docId)) {
+      return res.status(400).json({ success: false, message: 'Invalid document id.' });
+    }
     const user = await User.findById(req.user._id).select('medicalDocuments');
     const document = user?.medicalDocuments?.id(req.params.docId);
     const result = buildMedicalDocumentResponse(document);
@@ -346,6 +349,9 @@ const viewMedicalDocument = async (req, res, next) => {
 
 const deleteMedicalDocument = async (req, res, next) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.docId)) {
+      return res.status(400).json({ success: false, message: 'Invalid document id.' });
+    }
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
