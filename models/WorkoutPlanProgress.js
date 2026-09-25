@@ -29,6 +29,16 @@ const workoutPlanProgressSchema = new mongoose.Schema(
     planId: { type: mongoose.Schema.Types.ObjectId, ref: 'WorkoutPlan', required: true },
     memberId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     entries: [progressEntrySchema],
+    // Daily refresh history — resetDailyProgress archives the current
+    // entries here before clearing them so a client can redo the workout
+    // on a new day without losing historical completion records.
+    history: [
+      {
+        date: { type: Date, default: Date.now },
+        entries: [progressEntrySchema],
+      },
+    ],
+    lastResetAt: { type: Date },
   },
   { timestamps: true }
 );

@@ -4,6 +4,7 @@ const socketUtil = require('../utils/socket');
 const attendanceService = require('../services/attendanceService');
 const RfidConfig = require('../models/RfidConfig');
 const { getScanMessage } = require('../utils/scanMessages');
+const { normalizeUid } = require('../utils/normalizeUid');
 
 // How long the initial "WELCOME / <name>" LCD message stays up before
 // being replaced by the "TIME IN / SUCCESS" stage — matches the 2-second
@@ -374,10 +375,14 @@ function closeCurrentPort() {
 // the same function the REST /api/rfid/scan fallback uses.
 
 async function handleRFIDData(line) {
-  const uid = line.trim().toUpperCase();
+  const raw = line.trim();
+  // Canonical normalization: strips \r\n/whitespace, spaces, dashes,
+  // colons; uppercases. Arduino sends "A1B2C3D4" but IDE copy/paste or
+  // manual entry may yield "A1 B2 C3 D4" / lowercase / dashes.
+  const uid = normalizeUid(line);
   if (!uid) return;
 
-  console.log(`[RFID] Received UID: ${uid}`);
+  console.log(`[RFID] Serial incoming: ${raw} → normalized: ${uid}`);
 
   // Broadcast every raw tap to admins BEFORE attempting attendance
   // processing. AdminrfidRegistration.vue and AdminSettings.vue both

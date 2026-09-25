@@ -621,6 +621,7 @@ const createManualPayment = async (req, res, next) => {
     await payment.populate('planId', 'name duration');
 
     let subscriptionError = null;
+    let subscription = null;
     try {
       subscription = await subscriptionService.createSubscription({
         userId: payment.userId,

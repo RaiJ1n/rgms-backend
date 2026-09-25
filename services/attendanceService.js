@@ -8,6 +8,7 @@ const socketUtil = require('../utils/socket');
 const subscriptionService = require('./subscriptionService');
 const { getScanMessage } = require('../utils/scanMessages');
 const { startOfLocalDay } = require('../utils/localDate');
+const { normalizeUid } = require('../utils/normalizeUid');
 
 const httpError = (message, statusCode, errorType) => {
   const err = new Error(message);
@@ -39,13 +40,19 @@ function emitScanError(errorType, extra) {
  * employees/coaches.
  */
 async function processScan(cardId) {
-  const uid = cardId.trim().toUpperCase();
+  const raw = cardId;
+  const uid = normalizeUid(cardId);
+
+  // Safe debug logging: UID only, never passwords/secrets/PII.
+  console.log(`[RFID] Incoming UID: ${String(raw).trim()}`);
+  console.log(`[RFID] Normalized UID: ${uid}`);
 
   if (!/^[0-9A-F]{8,14}$/i.test(uid)) {
     throw httpError('Invalid cardId format', 400, 'invalid_format');
   }
 
   const card = await RFIDCard.findOne({ cardId: uid }).populate('userId').populate('coachId');
+  console.log(`[RFID] Member lookup for ${uid}: ${card ? 'FOUND' : 'NOT FOUND'}`);
 
   // Split into two distinct cases (previously both collapsed into
   // 'card_invalid'): a UID that was never registered at all needs a

@@ -6,12 +6,16 @@ const Coach = require('../models/Coach');
 const AuditLog = require('../models/AuditLog');
 const socketUtil = require('../utils/socket');
 const rfidService = require('../services/rfidService');
+const { normalizeUid } = require('../utils/normalizeUid');
 
 exports.registerCard = async (req, res, next) => {
   try {
-    const { userId, coachId, cardId } = req.body;
+    const { userId, coachId } = req.body;
+    // Accept `uid` as an alias — some hardware/clients send { uid }
+    // while the documented contract is { cardId }.
+    const rawCardId = req.body.cardId ?? req.body.uid;
 
-    if (!cardId) {
+    if (!rawCardId) {
       return res.status(400).json({
         success: false,
         message: 'cardId is required',
@@ -30,6 +34,12 @@ exports.registerCard = async (req, res, next) => {
       });
     }
 
+    // Normalize on BIND side (same util as SCAN side): strips spaces,
+    // dashes, colons, trims \r\n, uppercases. "A1 B2 C3 D4" and
+    // "a1b2c3d4" both bind as "A1B2C3D4".
+    const cardId = normalizeUid(rawCardId);
+    console.log(`[RFID] Bind request — incoming: ${String(rawCardId).trim()} → normalized: ${cardId}`);
+
     // Validate UID format (hexadecimal, 8-14 characters)
     if (!/^[0-9A-F]{8,14}$/i.test(cardId)) {
       return res.status(400).json({
@@ -38,8 +48,9 @@ exports.registerCard = async (req, res, next) => {
       });
     }
 
-    // Check if card already registered
-    const existing = await RFIDCard.findOne({ cardId: cardId.toUpperCase() });
+    // Check if card already registered (normalized, so "A1 B2 C3 D4"
+    // can never silently duplicate "A1B2C3D4")
+    const existing = await RFIDCard.findOne({ cardId });
     if (existing) {
       const sameOwner =
         (userId && existing.userId && existing.userId.toString() === userId) ||
@@ -66,7 +77,7 @@ exports.registerCard = async (req, res, next) => {
 
     // Create RFID card document
     const card = new RFIDCard({
-      cardId: cardId.toUpperCase(),
+      cardId,
       userId: userId || undefined,
       coachId: coachId || undefined,
       active: true,
@@ -127,10 +138,13 @@ const { startOfLocalDay, endOfLocalDay, formatLocalDateLabel } = require('../uti
 
 exports.scanCard = async (req, res, next) => {
   try {
-    const { cardId } = req.body;
-    if (!cardId) {
+    // Accept `uid` alias (hardware often sends { uid }) alongside { cardId }.
+    const rawCardId = req.body.cardId ?? req.body.uid;
+    if (!rawCardId) {
       return res.status(400).json({ success: false, message: 'cardId is required' });
     }
+    const cardId = normalizeUid(rawCardId);
+    console.log(`[RFID] REST scan — incoming: ${String(rawCardId).trim()} → normalized: ${cardId}`);
 
     const { action, attendance, user } = await attendanceService.processScan(cardId);
 
@@ -336,9 +350,9 @@ exports.getEmployeeRFID = async (req, res, next) => {
 
 exports.deactivateCard = async (req, res, next) => {
   try {
-    const { cardId } = req.params;
+    const cardId = normalizeUid(req.params.cardId);
     
-    const card = await RFIDCard.findOne({ cardId: cardId.toUpperCase() });
+    const card = await RFIDCard.findOne({ cardId });
     
     if (!card) {
       return res.status(404).json({
@@ -353,7 +367,7 @@ exports.deactivateCard = async (req, res, next) => {
     await AuditLog.create({
       action: 'rfid_deactivate',
       userId: req.user._id,
-      meta: { cardId },
+      meta: { cardId: card.cardId },
     });
     
     res.json({
@@ -369,7 +383,7 @@ exports.deactivateCard = async (req, res, next) => {
 
 exports.reassignCard = async (req, res, next) => {
   try {
-    const { cardId } = req.params;
+    const cardId = normalizeUid(req.params.cardId);
     const { userId } = req.body;
     
     if (!userId) {
@@ -379,7 +393,7 @@ exports.reassignCard = async (req, res, next) => {
       });
     }
     
-    const card = await RFIDCard.findOne({ cardId: cardId.toUpperCase() });
+    const card = await RFIDCard.findOne({ cardId });
     
     if (!card) {
       return res.status(404).json({
@@ -420,6 +434,32 @@ exports.reassignCard = async (req, res, next) => {
       message: 'Card reassigned',
       data: card,
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Unbind (fully remove) an RFID card so the old UID no longer
+// authenticates anyone. DELETE /api/rfid/:cardId (admin only).
+// Distinct from deactivate (which keeps the row, active=false):
+// unbind deletes the RFIDCard document and verifies removal.
+exports.unbindCard = async (req, res, next) => {
+  try {
+    const cardId = normalizeUid(req.params.cardId);
+    const card = await RFIDCard.findOne({ cardId });
+    if (!card) {
+      return res.status(404).json({ success: false, message: 'Card not found' });
+    }
+    const ownerId = card.userId || card.coachId;
+    await card.deleteOne();
+    await AuditLog.create({
+      action: 'rfid_unbind',
+      userId: req.user._id,
+      meta: { cardId },
+    });
+    if (ownerId) socketUtil.emitToUser(ownerId, 'rfid:updated', { bound: false });
+    console.log(`[RFID] Card unbound: ${cardId}`);
+    res.json({ success: true, message: 'Card unbound — it will no longer authenticate', data: { cardId } });
   } catch (err) {
     next(err);
   }
