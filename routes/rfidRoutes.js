@@ -40,6 +40,12 @@ router.get('/ports', rfidController.listPorts);
 // Body: { port, baudRate? }
 router.post('/connect', rfidController.connectPort);
 
+// Disconnect the current serial port (idempotent — safe to call while
+// already disconnected). Lets the admin release a port before picking
+// another one.
+// POST /api/rfid/disconnect
+router.post('/disconnect', rfidController.disconnectPort);
+
 // Toggle registration mode (Bind/Register UI open/close)
 // POST /api/rfid/registration-mode
 // Body: { enabled }
