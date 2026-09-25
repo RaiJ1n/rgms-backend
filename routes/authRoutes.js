@@ -1,9 +1,35 @@
 const express = require('express');
 const { body } = require('express-validator');
 const authController = require('../controllers/authController');
+const oauthController = require('../controllers/oauthController');
+const passport = require('../config/passport');
 const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
+
+// ---- Google / Facebook OAuth ----
+// Same underlying flow serves both the Login and Sign Up pages — the
+// buttons on each just point at these two GET routes, and
+// oauthService.handleOAuthProfile is what decides new-account vs.
+// sign-in vs. conflict, not the page the user clicked from. See
+// oauthController.js for the callback/exchange/link handlers and
+// oauthService.js for that decision logic.
+router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'], session: false }));
+router.get('/google/callback', oauthController.googleCallback);
+
+router.get('/facebook', passport.authenticate('facebook', { scope: ['email'], session: false }));
+router.get('/facebook/callback', oauthController.facebookCallback);
+
+// Trades the one-time code from the /oauth/callback redirect for the
+// actual { user, token } — called by the frontend's OAuthCallback.vue.
+router.post('/oauth/exchange', [body('code').notEmpty().withMessage('Missing code')], oauthController.exchangeCode);
+
+// Completes account-linking after the user has proven ownership of
+// their existing account via a normal (protected) login — see
+// oauthService.linkProviderToUser.
+router.post('/link', protect, [body('ticket').notEmpty().withMessage('Missing ticket')], oauthController.linkAccount);
+
+router.get('/me', protect, oauthController.me);
 
 router.post(
   '/register',

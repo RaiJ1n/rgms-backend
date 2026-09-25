@@ -1,6 +1,12 @@
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+// Loads/registers the Google + Facebook strategies (config/passport.js).
+// Only passport.initialize() below is actually used as middleware —
+// there's no passport.session()/serializeUser anywhere, since the app's
+// session is still the existing JWT (see authMiddleware.protect), not
+// a passport-managed one.
+const passport = require('./config/passport');
 const errorMiddleware = require('./middleware/errorMiddleware');
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -33,6 +39,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+app.use(passport.initialize());
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);

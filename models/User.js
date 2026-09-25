@@ -10,8 +10,14 @@ const userSchema = new mongoose.Schema({
     unique: true, 
     lowercase: true, 
     trim: true },
-  password: { type: String, 
-    required: true, 
+  // Not required at the schema level anymore: a user who signs up via
+  // Google/Facebook only (see AuthAccount.js) never sets a password at
+  // all. Email/password registration still goes through the same
+  // register() validator in authRoutes.js, which enforces the 8-char
+  // minimum itself before this ever reaches the model — so nothing
+  // changes for that flow. matchPassword() below guards the
+  // OAuth-only case (no password on the document) explicitly.
+  password: { type: String,
     minlength: 8 },
   role: { type: String, 
     enum: ['user', 'admin', 'coach'], 
@@ -220,7 +226,7 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) {
+  if (!this.isModified('password') || !this.password) {
     return next();
   }
   const salt = await bcrypt.genSalt(10);
@@ -229,7 +235,21 @@ userSchema.pre('save', async function (next) {
 });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {
+  // A Google/Facebook-only account has no password set at all — treat
+  // any password-login attempt against it as a non-match rather than
+  // letting bcrypt.compare throw on an undefined hash. The user should
+  // use "Continue with Google/Facebook" instead, or set a password via
+  // account settings first.
+  if (!this.password) return false;
   return bcrypt.compare(enteredPassword, this.password);
+};
+
+// True once this user has a usable email/password login in addition
+// to (or instead of) any linked OAuth providers. Read by
+// userController/Settings if you want to show "Set a password" vs.
+// "Change password" in the UI for OAuth-only accounts.
+userSchema.methods.hasPassword = function () {
+  return !!this.password;
 };
 
 module.exports = mongoose.model('User', userSchema);
