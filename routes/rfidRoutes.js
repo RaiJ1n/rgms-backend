@@ -63,6 +63,10 @@ router.get('/employee/:coachId', rfidController.getEmployeeRFID);
 // PUT /api/rfid/:cardId/deactivate
 router.put('/:cardId/deactivate', rfidController.deactivateCard);
 
+// Unbind (fully remove) an RFID card — old UID stops authenticating
+// DELETE /api/rfid/:cardId
+router.delete('/:cardId', rfidController.unbindCard);
+
 // Reassign RFID card to a different member
 // PUT /api/rfid/:cardId/reassign
 // Body: { userId }
