@@ -55,6 +55,40 @@ let lastConnectedDevice = null; // { vendorId, productId, serialNumber, friendly
 let bindingSession = { enabled: false, mode: 'register', userId: null, coachId: null, startedAt: null, startedBy: null };
 // Back-compat alias — everything historical referenced `registrationMode`.
 let registrationMode = false;
+// Safety net against stuck-ON binding mode: if an admin leaves the Bind
+// modal / Register page open (or closes the tab without the unmount POST
+// firing), every subsequent attendance tap would be routed to BINDING and
+// already-bound cards would never record attendance — easily misread as
+// "not recognized". The timer auto-disables binding after this long;
+// every fresh setRegistrationMode(true) refreshes it. Configurable via
+// BINDING_TIMEOUT_MS (default 2 minutes — long enough to pick an owner
+// and tap, short enough to self-heal a stuck session).
+const BINDING_TIMEOUT_MS = Number(process.env.BINDING_TIMEOUT_MS || 120000);
+let bindingTimer = null;
+
+function clearBindingTimer() {
+  if (bindingTimer) {
+    clearTimeout(bindingTimer);
+    bindingTimer = null;
+  }
+}
+
+function armBindingTimer() {
+  clearBindingTimer();
+  if (!Number.isFinite(BINDING_TIMEOUT_MS) || BINDING_TIMEOUT_MS <= 0) return;
+  bindingTimer = setTimeout(() => {
+    bindingTimer = null;
+    if (!registrationMode) return;
+    console.log(`[RFID] Binding mode auto-OFF after ${BINDING_TIMEOUT_MS}ms with no explicit close (stuck-session safety net)`);
+    exports.setRegistrationMode(false);
+    try {
+      socketUtil.emitToAdmins('rfid:status', exports.getStatus());
+    } catch {
+      // Non-fatal: expiry must never throw.
+    }
+  }, BINDING_TIMEOUT_MS);
+  if (bindingTimer.unref) bindingTimer.unref();
+}
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY_MS = 3000;
 
@@ -411,10 +445,9 @@ async function handleRFIDData(line) {
     console.log(`[RFID] SELECTED MEMBER: ${ownerId || '(none — capture only)'}`);
     console.log(`[RFID] EXISTING RFID MATCH: checking ${uid}...`);
 
-    // Always broadcast first so bind UIs can auto-fill/display even when
-    // no owner is pre-selected (Register page flow).
-    socketUtil.emitToAdmins('rfid:scanned', { cardId: uid, at: new Date() });
-
+    // The single 'rfid:scanned' broadcast at the top of handleRFIDData
+    // already covered bind UIs — no second emit here, otherwise every
+    // bind tap triggers duplicate auto-bind POSTs.
     // No pre-selected owner (Register page: owner picked AFTER the tap) —
     // capture-only. Acknowledge detection; registration happens when the
     // frontend POSTs /api/rfid/register, which then pushes RFID BOUND.
@@ -662,7 +695,9 @@ exports.setRegistrationMode = (enabled, opts = {}) => {
     };
   } else {
     bindingSession = { enabled: false, mode: 'register', userId: null, coachId: null, startedAt: null, startedBy: null };
+    clearBindingTimer();
   }
+  if (on) armBindingTimer();
   console.log(
     `[RFID] Registration mode ${registrationMode ? `ON (${bindingSession.mode}${bindingSession.userId || bindingSession.coachId ? `, owner=${bindingSession.userId || bindingSession.coachId}` : ', capture-only'})` : 'OFF'}`
   );

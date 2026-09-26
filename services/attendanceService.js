@@ -44,15 +44,18 @@ async function processScan(cardId) {
   const uid = normalizeUid(cardId);
 
   // Safe debug logging: UID only, never passwords/secrets/PII.
-  console.log(`[RFID] Incoming UID: ${String(raw).trim()}`);
-  console.log(`[RFID] Normalized UID: ${uid}`);
+  // Single explicit line per tap (per diagnostics spec): raw → normalized
+  // → match yes/no, so an attendance-mode failure is visible without
+  // inferring it from the LCD.
+  console.log(`[RFID] Attendance request — incoming: ${String(raw).trim()} → normalized: ${uid}`);
 
   if (!/^[0-9A-F]{8,14}$/i.test(uid)) {
+    console.log(`[RFID] Attendance request — incoming: ${String(raw).trim()} → normalized: ${uid} → match: no (invalid_format)`);
     throw httpError('Invalid cardId format', 400, 'invalid_format');
   }
 
   const card = await RFIDCard.findOne({ cardId: uid }).populate('userId').populate('coachId');
-  console.log(`[RFID] Member lookup for ${uid}: ${card ? 'FOUND' : 'NOT FOUND'}`);
+  console.log(`[RFID] Attendance request — incoming: ${String(raw).trim()} → normalized: ${uid} → match: ${card ? 'yes' : 'no'}`);
 
   // Split into two distinct cases (previously both collapsed into
   // 'card_invalid'): a UID that was never registered at all needs a

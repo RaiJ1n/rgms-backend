@@ -79,6 +79,9 @@ async function handleUid(rawLine) {
   if (!uid) return;
   if (busy) {
     console.log(`[BRIDGE] Tap ${uid} ignored — previous tap still in flight`);
+    // Give the person at the reader something actionable instead of
+    // silence followed by the sketch's SERVER ERROR fallback.
+    await writeLine('PLEASE WAIT|TRY AGAIN');
     return;
   }
   busy = true;
@@ -117,13 +120,24 @@ async function handleUid(rawLine) {
 
 async function pollStatus() {
   try {
-    const res = await fetch(`${API_BASE}/rfid/status`, { headers });
-    if (!res.ok) return;
-    const body = await res.json().catch(() => null);
-    const b = body && body.data && body.data.binding ? body.data.binding : body && body.data;
-    const mode = !(b && (b.registrationMode || (b.binding && b.binding.enabled) || b.enabled))
-      ? 'ATTENDANCE'
-      : ((b.binding && b.binding.mode) === 'bind' || b.mode === 'bind' ? 'BIND' : 'REGISTER');
+    // Device-key endpoint (no admin JWT on the bridge machine). Falls back
+    // to the admin /status for older backends that don't have it yet —
+    // that fallback 401s silently, same as before.
+    let body = null;
+    const devRes = await fetch(`${API_BASE}/rfid/device-status`, { headers });
+    if (devRes.ok) {
+      body = await devRes.json().catch(() => null);
+    } else {
+      const res = await fetch(`${API_BASE}/rfid/status`, { headers });
+      if (!res.ok) return;
+      body = await res.json().catch(() => null);
+    }
+    const d = body && body.data;
+    // New shape: { registrationMode, binding: { enabled, mode } }.
+    // Legacy shape: full getStatus() with binding nested the same way.
+    const b = (d && d.binding) || {};
+    const enabled = !!(d && (d.registrationMode || b.enabled));
+    const mode = !enabled ? 'ATTENDANCE' : (b.mode === 'bind' ? 'BIND' : 'REGISTER');
     if (mode !== lastMode) {
       lastMode = mode;
       console.log(`[BRIDGE] Mode → ${mode}`);
