@@ -394,11 +394,14 @@ async function handleRFIDData(line) {
 
   if (registrationMode) {
     // An admin is actively binding/registering this exact card right now
-    // — the UID above already reached them. Deliberately skip the
-    // check-in/out attempt: we don't want to accidentally check someone
-    // in mid-registration, and the LCD should read as "this is expected",
-    // not "Access Denied".
-    exports.sendToArduino(`Card registered|${uid}`);
+    // — the UID above already reached them via 'rfid:scanned'. Deliberately
+    // skip the check-in/out attempt AND the unregistered-card rejection:
+    // a brand-new card must be acceptable here (the frontend is about to
+    // POST it to /api/rfid/register). The LCD just acknowledges detection —
+    // "Card detected", NOT "Card registered", since registration only
+    // happens once the frontend's bind request succeeds.
+    console.log(`[RFID] Binding mode — captured ${uid} for registration (attendance skipped)`);
+    exports.sendToArduino(`Card detected|${uid}`);
     return;
   }
 
