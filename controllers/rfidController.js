@@ -102,13 +102,29 @@ exports.registerCard = async (req, res, next) => {
         active: card.active,
       });
     }
+    // All admins (drives the bind modal + any serial bridge relay).
+    socketUtil.emitToAdmins('rfid:bound', {
+      cardId: card.cardId,
+      ownerId: userId || coachId,
+      ownerType: userId ? 'member' : 'employee',
+      at: new Date(),
+    });
 
     console.log(`[RFID] Card registered: ${cardId} → ${ownerName}`);
+
+    // Push the binding result to the physical LCD when a serial reader is
+    // attached to THIS backend instance. Without this, a successful bind
+    // left the LCD sitting on the earlier "Card detected" ack with no
+    // confirmation. No-op when no serial port is open (e.g. VPS
+    // deployment — see scripts/rfidBridge.js, which relays the `rfid:bound`
+    // socket event to its local Arduino instead).
+    rfidService.sendToArduino(`RFID BOUND|${card.cardId.slice(0, 16)}`);
 
     res.status(201).json({
       success: true,
       message: 'Card registered successfully',
       data: card,
+      lcd: { line1: 'RFID BOUND', line2: card.cardId.slice(0, 16) },
     });
   } catch (err) {
     next(err);
@@ -155,12 +171,17 @@ exports.scanCard = async (req, res, next) => {
     // return without any attendance validation.
     if (rfidService.getStatus().registrationMode) {
       socketUtil.emitToAdmins('rfid:scanned', { cardId, at: new Date() });
-      console.log(`[RFID] Binding mode (REST) — captured ${cardId} for registration (attendance skipped)`);
+      console.log(`[RFID] OPERATION: BINDING (REST) — captured ${cardId} for registration (attendance skipped)`);
       return res.json({
         success: true,
         bindingMode: true,
         message: 'Card detected — ready to bind',
         data: { cardId },
+        // LCD lines for serial-bridge deployments (scripts/rfidBridge.js):
+        // the bridge writes these to its local Arduino so the physical
+        // reader acknowledges the tap even though this backend (VPS) has
+        // no USB serial attached.
+        lcd: { line1: 'Card detected', line2: cardId.slice(0, 16) },
       });
     }
 
@@ -178,6 +199,10 @@ exports.scanCard = async (req, res, next) => {
       message: msg.title,
       detail: msg.body(user.fullname, eventTime.toLocaleTimeString()),
       data: attendance,
+      lcd:
+        action === 'checkin'
+          ? { line1: msg.lcdLine1, line2: user.fullname.slice(0, 16), stage2: msg.lcdStage2 }
+          : { line1: msg.lcdLine1, line2: user.fullname.slice(0, 16), stage2: msg.lcdStage2 },
     });
   } catch (err) {
     // errors thrown by processScan already carry statusCode + a clean message
@@ -187,6 +212,7 @@ exports.scanCard = async (req, res, next) => {
         success: false,
         message: msg.title,
         detail: msg.body,
+        lcd: { line1: msg.lcdLine1, line2: msg.lcdLine2 },
       });
     }
     next(err);
@@ -313,9 +339,25 @@ exports.disconnectPort = async (req, res, next) => {
 
 exports.setRegistrationMode = async (req, res, next) => {
   try {
-    const { enabled } = req.body;
-    rfidService.setRegistrationMode(!!enabled);
-    res.json({ success: true, data: { registrationMode: !!enabled } });
+    const body = typeof req.body === 'object' && req.body !== null ? req.body : {};
+    const enabled = body.enabled;
+    // Optional binding context: which flow + which pre-selected owner.
+    // EditMember bind modal sends { enabled:true, mode:'bind', userId };
+    // the Register page sends { enabled:true, mode:'register' } and updates
+    // userId/coachId later once an owner is picked (capture-only until then).
+    const mode = body.mode === 'bind' ? 'bind' : 'register';
+    const userId = body.userId || null;
+    const coachId = body.coachId || null;
+    if (userId && coachId) {
+      return res.status(400).json({ success: false, message: 'Provide userId or coachId, not both' });
+    }
+    rfidService.setRegistrationMode(!!enabled, {
+      mode,
+      userId,
+      coachId,
+      startedBy: req.user?._id,
+    });
+    res.json({ success: true, data: rfidService.getStatus().binding });
   } catch (err) {
     next(err);
   }
