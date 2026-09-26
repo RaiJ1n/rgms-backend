@@ -40,12 +40,20 @@ let connectionAttempts = 0;
 let currentBaudRate = 9600;
 let lastError = null;
 let lastConnectedDevice = null; // { vendorId, productId, serialNumber, friendlyName }
-// When true, an admin is actively binding/registering a card via the
-// Settings or Registration UI. Scans during this window skip the normal
-// check-in/out attempt entirely (see handleRFIDData) — otherwise every
-// scan of an as-yet-unbound card would fail attendanceService.processScan
-// and show "Access Denied" on the Arduino's LCD, which reads like a
-// rejected member rather than "this is an expected part of registering."
+// Binding-mode session (replaces the old bare boolean). The backend is the
+// single source of truth for "what does the next tap mean" — the frontend
+// (EditMember bind modal / Register page) sets this via
+// POST /api/rfid/registration-mode, and BOTH the serial path
+// (handleRFIDData) and the REST fallback (rfidController.scanCard) route
+// off it. Shape:
+//   { enabled, mode: 'register'|'bind', userId?, coachId?, startedAt, startedBy }
+// `mode` only affects the Arduino idle screen (MODE:REGISTER vs MODE:BIND);
+// routing treats both as "binding". `userId`/`coachId` is the pre-selected
+// owner (EditMember flow) enabling backend auto-bind so a tap binds even if
+// the frontend socket event is delayed/lost. The Register page sets no
+// owner (owner picked after the tap) → capture-only.
+let bindingSession = { enabled: false, mode: 'register', userId: null, coachId: null, startedAt: null, startedBy: null };
+// Back-compat alias — everything historical referenced `registrationMode`.
 let registrationMode = false;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY_MS = 3000;
@@ -291,7 +299,7 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
       // stays powered on and mid-registration — without this it would
       // keep showing "REGISTER MODE" indefinitely since nothing else
       // would tell it otherwise.
-      exports.sendToArduino(`MODE:${registrationMode ? 'REGISTER' : 'ATTENDANCE'}`);
+      exports.sendToArduino(`MODE:${!registrationMode ? 'ATTENDANCE' : bindingSession.mode === 'bind' ? 'BIND' : 'REGISTER'}`);
 
       // FIX (kept from the original): both 'error' and 'close' fire on a
       // real disconnect — routing both through the same guarded function
@@ -393,15 +401,105 @@ async function handleRFIDData(line) {
   socketUtil.emitToAdmins('rfid:scanned', { cardId: uid, at: new Date() });
 
   if (registrationMode) {
-    // An admin is actively binding/registering this exact card right now
-    // — the UID above already reached them via 'rfid:scanned'. Deliberately
-    // skip the check-in/out attempt AND the unregistered-card rejection:
-    // a brand-new card must be acceptable here (the frontend is about to
-    // POST it to /api/rfid/register). The LCD just acknowledges detection —
-    // "Card detected", NOT "Card registered", since registration only
-    // happens once the frontend's bind request succeeds.
-    console.log(`[RFID] Binding mode — captured ${uid} for registration (attendance skipped)`);
-    exports.sendToArduino(`Card detected|${uid}`);
+    // BINDING MODE — the next tap is a registration candidate, NOT an
+    // attendance scan. A brand-new/unregistered UID is the EXPECTED case
+    // here and must never fall through to processScan (which would reject
+    // it as card_unregistered / "RFID NOT REGISTERED").
+    const ownerId = bindingSession.userId || bindingSession.coachId || null;
+    const ownerType = bindingSession.userId ? 'member' : bindingSession.coachId ? 'employee' : null;
+    console.log(`[RFID] OPERATION: BINDING (mode=${bindingSession.mode})`);
+    console.log(`[RFID] SELECTED MEMBER: ${ownerId || '(none — capture only)'}`);
+    console.log(`[RFID] EXISTING RFID MATCH: checking ${uid}...`);
+
+    // Always broadcast first so bind UIs can auto-fill/display even when
+    // no owner is pre-selected (Register page flow).
+    socketUtil.emitToAdmins('rfid:scanned', { cardId: uid, at: new Date() });
+
+    // No pre-selected owner (Register page: owner picked AFTER the tap) —
+    // capture-only. Acknowledge detection; registration happens when the
+    // frontend POSTs /api/rfid/register, which then pushes RFID BOUND.
+    if (!ownerId) {
+      console.log(`[RFID] Binding mode (capture) — held ${uid} for registration (attendance skipped)`);
+      exports.sendToArduino(`Card detected|${uid}`);
+      return;
+    }
+
+    // Pre-selected owner (EditMember bind modal): auto-bind directly here
+    // so the tap binds even if the frontend socket round-trip is
+    // delayed/lost. Idempotent — a repeat tap for the same owner reports
+    // success; a UID owned by someone else is rejected as duplicate.
+    // The frontend's own POST /register (triggered by the rfid:scanned
+    // event above) may race this; it converges via the same duplicate
+    // check (frontend treats "already bound to this member" as success).
+    try {
+      const RFIDCard = require('../models/RFIDCard');
+      const User = require('../models/User');
+      const Coach = require('../models/Coach');
+      const AuditLog = require('../models/AuditLog');
+
+      const existing = await RFIDCard.findOne({ cardId: uid });
+      if (existing) {
+        const sameOwner =
+          (bindingSession.userId && existing.userId && existing.userId.toString() === String(bindingSession.userId)) ||
+          (bindingSession.coachId && existing.coachId && existing.coachId.toString() === String(bindingSession.coachId));
+        if (sameOwner) {
+          console.log(`[RFID] Binding idempotent — ${uid} already bound to this ${ownerType}`);
+          exports.sendToArduino(`RFID BOUND|${uid.slice(0, 16)}`);
+          socketUtil.emitToAdmins('rfid:bound', { cardId: uid, ownerId, ownerType, at: new Date() });
+        } else {
+          console.log(`[RFID] Binding rejected — ${uid} already assigned to another account`);
+          exports.sendToArduino('ALREADY|REGISTERED');
+          socketUtil.emitToAdmins('rfid:error', {
+            title: 'RFID Already Registered',
+            message: 'This RFID card is already assigned to another account.',
+            timestamp: new Date(),
+            uid,
+          });
+        }
+        return;
+      }
+
+      let ownerName = '';
+      if (bindingSession.userId) {
+        const user = await User.findById(bindingSession.userId);
+        if (!user) {
+          console.log(`[RFID] Binding failed — selected member ${bindingSession.userId} not found`);
+          exports.sendToArduino('BIND FAILED|NO MEMBER');
+          return;
+        }
+        ownerName = user.fullname;
+      } else {
+        const coach = await Coach.findById(bindingSession.coachId);
+        if (!coach) {
+          console.log(`[RFID] Binding failed — selected employee ${bindingSession.coachId} not found`);
+          exports.sendToArduino('BIND FAILED|NO MEMBER');
+          return;
+        }
+        ownerName = coach.fullname;
+      }
+
+      await RFIDCard.create({
+        cardId: uid,
+        userId: bindingSession.userId || undefined,
+        coachId: bindingSession.coachId || undefined,
+        active: true,
+        assignedAt: new Date(),
+      });
+      await AuditLog.create({
+        action: 'rfid_register',
+        userId: bindingSession.startedBy || undefined,
+        meta: { cardId: uid, ownerId, ownerType, via: 'serial-auto-bind' },
+      }).catch(() => {});
+      if (bindingSession.userId) {
+        socketUtil.emitToUser(bindingSession.userId, 'rfid:updated', { bound: true, cardId: uid, active: true });
+      }
+      socketUtil.emitToAdmins('rfid:bound', { cardId: uid, ownerId, ownerType, at: new Date() });
+      console.log(`[RFID] Binding successful — ${uid} → ${ownerName}`);
+      exports.sendToArduino(`RFID BOUND|${uid.slice(0, 16)}`);
+    } catch (err) {
+      console.warn(`[RFID] Binding auto-bind error for ${uid}: ${err.message}`);
+      exports.sendToArduino('BIND FAILED|RETRY');
+    }
     return;
   }
 
@@ -533,25 +631,42 @@ exports.sendToArduino = (message) => {
 // ============================================================================
 // Set to true while the Bind RFID Card modal (EditMember.vue) or the
 // Register New Card page (AdminrfidRegistration.vue) is open. See the
-// `registrationMode` comment above for why this changes scan handling.
+// `bindingSession` comment above for why this changes scan handling.
 //
 // Also tells the Arduino's LCD idle screen to match, via the sketch's
-// MODE: command (see sketch_aug7d.ino's handleModeCommand) — e.g.
-// "REGISTER MODE / Tap new card" instead of the normal "Gym Attendance /
-// Tap your card". This is a *persistent* idle-screen change, distinct
-// from the temporary scan-result messages sent elsewhere in this file
-// (those auto-revert after ~4s back to whatever MODE is currently set).
+// MODE: command (see sketch_aug7d.ino's handleModeCommand). Distinct idle
+// screens per flow:
+//   bind modal     → MODE:BIND     ("BIND MODE / Tap new card")
+//   register page  → MODE:REGISTER ("REGISTER MODE / Tap new card")
+//   neither        → MODE:ATTENDANCE
+// A MODE command is a *persistent* idle-screen change, distinct from the
+// temporary scan-result messages sent elsewhere in this file (those
+// auto-revert after ~4s back to whatever MODE is currently set).
 //
-// The sketch also supports a separate MODE:BIND, but the backend only
-// tracks a single registrationMode boolean shared by both the "Bind RFID
-// Card" modal and the "Register New Card" page — so both map to
-// MODE:REGISTER here. Splitting that into two distinct modes would need
-// setRegistrationMode to take a mode name instead of a boolean; not done
-// here since nothing currently calls it with that distinction in mind.
-exports.setRegistrationMode = (enabled) => {
-  registrationMode = !!enabled;
-  console.log(`[RFID] Registration mode ${registrationMode ? 'ON' : 'OFF'}`);
-  exports.sendToArduino(`MODE:${registrationMode ? 'REGISTER' : 'ATTENDANCE'}`);
+// `opts` (optional): { mode: 'bind'|'register', userId?, coachId?,
+// startedBy? }. Accepts the legacy bare-boolean call
+// (setRegistrationMode(true/false)) for backward compatibility.
+exports.setRegistrationMode = (enabled, opts = {}) => {
+  const on = typeof enabled === 'object' && enabled !== null ? !!enabled.enabled : !!enabled;
+  const o = typeof enabled === 'object' && enabled !== null ? enabled : opts;
+  registrationMode = on;
+  if (on) {
+    const mode = o.mode === 'bind' ? 'bind' : 'register';
+    bindingSession = {
+      enabled: true,
+      mode,
+      userId: o.userId ? String(o.userId) : null,
+      coachId: o.coachId ? String(o.coachId) : null,
+      startedAt: new Date(),
+      startedBy: o.startedBy ? String(o.startedBy) : null,
+    };
+  } else {
+    bindingSession = { enabled: false, mode: 'register', userId: null, coachId: null, startedAt: null, startedBy: null };
+  }
+  console.log(
+    `[RFID] Registration mode ${registrationMode ? `ON (${bindingSession.mode}${bindingSession.userId || bindingSession.coachId ? `, owner=${bindingSession.userId || bindingSession.coachId}` : ', capture-only'})` : 'OFF'}`
+  );
+  exports.sendToArduino(`MODE:${!registrationMode ? 'ATTENDANCE' : bindingSession.mode === 'bind' ? 'BIND' : 'REGISTER'}`);
 };
 
 // ============================================================================
@@ -567,5 +682,6 @@ exports.getStatus = () => {
     lastError,
     device: lastConnectedDevice,
     registrationMode,
+    binding: bindingSession,
   };
 };
