@@ -146,6 +146,24 @@ exports.scanCard = async (req, res, next) => {
     const cardId = normalizeUid(rawCardId);
     console.log(`[RFID] REST scan — incoming: ${String(rawCardId).trim()} → normalized: ${cardId}`);
 
+    // Binding-mode router (mirrors the serial path in
+    // services/rfidService.js handleRFIDData): while an admin has binding
+    // mode enabled, a tap is a registration candidate — NOT an attendance
+    // scan. A new/unregistered UID is expected here and must NOT fall
+    // through to processScan (which would reject it as card_unregistered /
+    // "RFID NOT REGISTERED"). Broadcast it so bind UIs can auto-fill, then
+    // return without any attendance validation.
+    if (rfidService.getStatus().registrationMode) {
+      socketUtil.emitToAdmins('rfid:scanned', { cardId, at: new Date() });
+      console.log(`[RFID] Binding mode (REST) — captured ${cardId} for registration (attendance skipped)`);
+      return res.json({
+        success: true,
+        bindingMode: true,
+        message: 'Card detected — ready to bind',
+        data: { cardId },
+      });
+    }
+
     const { action, attendance, user } = await attendanceService.processScan(cardId);
 
     // Same message map the Arduino LCD reads from (utils/scanMessages.js)
