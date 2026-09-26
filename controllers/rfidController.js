@@ -289,10 +289,28 @@ exports.todayAttendance = async (req, res, next) => {
 exports.getStatus = async (req, res, next) => {
   try {
     const status = rfidService.getStatus();
-    
+
     res.json({
       success: true,
       data: status,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Minimal binding-mode status for the serial bridge (device-key auth, no
+// admin JWT). See the route comment in routes/rfidRoutes.js for why this
+// exists separately from getStatus.
+exports.getDeviceStatus = async (req, res, next) => {
+  try {
+    const status = rfidService.getStatus();
+    res.json({
+      success: true,
+      data: {
+        registrationMode: status.registrationMode,
+        binding: status.binding,
+      },
     });
   } catch (err) {
     next(err);

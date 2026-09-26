@@ -7,6 +7,14 @@ const { requireDeviceKey } = require('../middleware/deviceAuthMiddleware');
 
 router.post('/scan', requireDeviceKey, rfidController.scanCard);
 
+// Device-key status for the local serial bridge (scripts/rfidBridge.js).
+// The bridge has no admin JWT — only x-device-key — so it can never call
+// the admin-protected GET /status below (that 401 is silent in the bridge
+// poll loop, which left the Arduino LCD stuck on the attendance idle
+// screen forever, even while the backend was in BIND/REGISTER mode).
+// This endpoint exposes ONLY the binding mode (no port/config details).
+router.get('/device-status', requireDeviceKey, rfidController.getDeviceStatus);
+
 // All admin routes are protected
 router.use(protect, admin);
 
