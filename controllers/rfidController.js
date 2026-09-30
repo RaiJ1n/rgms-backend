@@ -6,7 +6,7 @@ const Coach = require('../models/Coach');
 const AuditLog = require('../models/AuditLog');
 const socketUtil = require('../utils/socket');
 const rfidService = require('../services/rfidService');
-const { normalizeUid } = require('../utils/normalizeUid');
+const { normalizeUid, isValidUid } = require('../utils/normalizeUid');
 
 exports.registerCard = async (req, res, next) => {
   try {
@@ -119,6 +119,8 @@ exports.registerCard = async (req, res, next) => {
     // deployment — see scripts/rfidBridge.js, which relays the `rfid:bound`
     // socket event to its local Arduino instead).
     rfidService.sendToArduino(`RFID BOUND|${card.cardId.slice(0, 16)}`);
+    // Split deployment: the bridge polls /device-status and shows this on its LCD.
+    rfidService.noteBound(card.cardId, userId || coachId);
 
     res.status(201).json({
       success: true,
@@ -152,6 +154,65 @@ const attendanceService = require('../services/attendanceService');
 const { getScanMessage } = require('../utils/scanMessages');
 const { startOfLocalDay, endOfLocalDay, formatLocalDateLabel } = require('../utils/localDate');
 
+// Auto-bind a tap captured in binding mode when the admin already picked an
+// owner (EditMember bind modal). Mirrors rfidService.handleRFIDData's serial
+// auto-bind so the REST/bridge path binds WITHOUT depending on the browser's
+// socket round-trip (rfid:scanned → POST /register). If the browser also
+// POSTs /register it converges: "already assigned to this account" is
+// treated as success by EditMember.vue.
+async function autoBindCaptured(cardId, session) {
+  const ownerId = session.userId || session.coachId;
+  const ownerType = session.userId ? 'member' : 'employee';
+
+  const existing = await RFIDCard.findOne({ cardId });
+  if (existing) {
+    const sameOwner =
+      (session.userId && existing.userId && existing.userId.toString() === String(session.userId)) ||
+      (session.coachId && existing.coachId && existing.coachId.toString() === String(session.coachId));
+    if (sameOwner) {
+      rfidService.noteBound(cardId, ownerId);
+      socketUtil.emitToAdmins('rfid:bound', { cardId, ownerId, ownerType, at: new Date() });
+      return { status: 200, bound: true, message: 'Card already bound to this account', lcd: { line1: 'RFID BOUND', line2: cardId.slice(0, 16) } };
+    }
+    socketUtil.emitToAdmins('rfid:error', {
+      title: 'RFID Already Registered',
+      message: 'This RFID card is already assigned to another account.',
+      timestamp: new Date(),
+      uid: cardId,
+    });
+    return { status: 409, bound: false, message: 'RFID already registered', lcd: { line1: 'ALREADY', line2: 'REGISTERED' } };
+  }
+
+  let ownerName;
+  if (session.userId) {
+    const user = await User.findById(session.userId);
+    if (!user) return { status: 404, bound: false, message: 'Selected member not found', lcd: { line1: 'BIND FAILED', line2: 'NO MEMBER' } };
+    ownerName = user.fullname;
+  } else {
+    const coach = await Coach.findById(session.coachId);
+    if (!coach) return { status: 404, bound: false, message: 'Selected employee not found', lcd: { line1: 'BIND FAILED', line2: 'NO MEMBER' } };
+    ownerName = coach.fullname;
+  }
+
+  await RFIDCard.create({
+    cardId,
+    userId: session.userId || undefined,
+    coachId: session.coachId || undefined,
+    active: true,
+    assignedAt: new Date(),
+  });
+  await AuditLog.create({
+    action: 'rfid_register',
+    userId: session.startedBy || undefined,
+    meta: { cardId, ownerId, ownerType, via: 'bridge-auto-bind' },
+  }).catch(() => {});
+  if (session.userId) socketUtil.emitToUser(session.userId, 'rfid:updated', { bound: true, cardId, active: true });
+  socketUtil.emitToAdmins('rfid:bound', { cardId, ownerId, ownerType, at: new Date() });
+  rfidService.noteBound(cardId, ownerId);
+  console.log(`[RFID] Binding successful (REST) — ${cardId} → ${ownerName}`);
+  return { status: 201, bound: true, message: 'Card registered successfully', lcd: { line1: 'RFID BOUND', line2: cardId.slice(0, 16) } };
+}
+
 exports.scanCard = async (req, res, next) => {
   try {
     // Accept `uid` alias (hardware often sends { uid }) alongside { cardId }.
@@ -160,28 +221,52 @@ exports.scanCard = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'cardId is required' });
     }
     const cardId = normalizeUid(rawCardId);
-    console.log(`[RFID] REST scan — incoming: ${String(rawCardId).trim()} → normalized: ${cardId}`);
+    const source = req.headers['x-bridge-id'] || req.ip;
+    console.log(`[RFID] REST scan — source: ${source} — incoming: ${String(rawCardId).trim()} → normalized: ${cardId}`);
+
+    // A tap that is not a real hex UID (stray serial text, debug lines) must
+    // never be broadcast as a "detected card" nor reach the binding UI.
+    if (!isValidUid(cardId)) {
+      const msg = getScanMessage('invalid_format');
+      console.log(`[RFID] REST scan rejected — not a valid UID: "${String(rawCardId).trim().slice(0, 40)}"`);
+      return res.status(400).json({
+        success: false,
+        message: msg.title,
+        detail: msg.body,
+        lcd: { line1: msg.lcdLine1, line2: msg.lcdLine2 },
+      });
+    }
 
     // Binding-mode router (mirrors the serial path in
     // services/rfidService.js handleRFIDData): while an admin has binding
     // mode enabled, a tap is a registration candidate — NOT an attendance
-    // scan. A new/unregistered UID is expected here and must NOT fall
-    // through to processScan (which would reject it as card_unregistered /
-    // "RFID NOT REGISTERED"). Broadcast it so bind UIs can auto-fill, then
-    // return without any attendance validation.
-    if (rfidService.getStatus().registrationMode) {
+    // scan.
+    const status = rfidService.getStatus();
+    if (status.registrationMode) {
       socketUtil.emitToAdmins('rfid:scanned', { cardId, at: new Date() });
-      console.log(`[RFID] OPERATION: BINDING (REST) — captured ${cardId} for registration (attendance skipped)`);
-      return res.json({
-        success: true,
+      const session = status.binding || {};
+      const hasOwner = !!(session.userId || session.coachId);
+      console.log(`[RFID] OPERATION: BINDING (REST) — captured ${cardId}, owner=${hasOwner ? (session.userId || session.coachId) : '(none — capture only)'}`);
+
+      if (!hasOwner) {
+        return res.json({
+          success: true,
+          bindingMode: true,
+          bound: false,
+          message: 'Card detected — ready to bind',
+          data: { cardId },
+          lcd: { line1: 'Card detected', line2: cardId.slice(0, 16) },
+        });
+      }
+
+      const result = await autoBindCaptured(cardId, session);
+      return res.status(result.status).json({
+        success: result.bound,
         bindingMode: true,
-        message: 'Card detected — ready to bind',
+        bound: result.bound,
+        message: result.message,
         data: { cardId },
-        // LCD lines for serial-bridge deployments (scripts/rfidBridge.js):
-        // the bridge writes these to its local Arduino so the physical
-        // reader acknowledges the tap even though this backend (VPS) has
-        // no USB serial attached.
-        lcd: { line1: 'Card detected', line2: cardId.slice(0, 16) },
+        lcd: result.lcd,
       });
     }
 
@@ -304,17 +389,40 @@ exports.getStatus = async (req, res, next) => {
 // exists separately from getStatus.
 exports.getDeviceStatus = async (req, res, next) => {
   try {
+    // Heartbeat: every bridge poll proves the bridge PC is alive and that
+    // its device key is accepted. Surfaced to admins as `bridgeConnected`.
+    rfidService.noteBridgeSeen({
+      id: req.headers['x-bridge-id'] || null,
+      version: req.headers['x-bridge-version'] || null,
+      serial: req.headers['x-bridge-serial'] || null,
+    });
     const status = rfidService.getStatus();
     res.json({
       success: true,
       data: {
         registrationMode: status.registrationMode,
         binding: status.binding,
+        lastBound: rfidService.getLastBound(),
       },
     });
   } catch (err) {
     next(err);
   }
+};
+
+// Device-key connectivity probe used by scripts/rfidDiagnose.js and the
+// bridge start-up self-test. Proves: DNS + TLS + Nginx + Express + device
+// key + backend mode, without touching attendance or card data.
+exports.ping = (req, res) => {
+  const status = rfidService.getStatus();
+  res.json({
+    success: true,
+    message: 'pong',
+    serverTime: new Date().toISOString(),
+    registrationMode: status.registrationMode,
+    bindingMode: status.binding && status.binding.mode,
+    serialConnected: status.connected,
+  });
 };
 
 exports.listPorts = async (req, res, next) => {
