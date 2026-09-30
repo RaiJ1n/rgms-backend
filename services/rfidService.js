@@ -89,6 +89,31 @@ function armBindingTimer() {
   }, BINDING_TIMEOUT_MS);
   if (bindingTimer.unref) bindingTimer.unref();
 }
+// ---------------------------------------------------------------------------
+// Split-deployment awareness (VPS backend + local scripts/rfidBridge.js).
+// On the VPS there is NO serial port, so `connected` (serial) is always
+// false there even while a healthy bridge PC is feeding taps in. The
+// bridge polls GET /rfid/device-status every few seconds; each poll stamps
+// `bridgeLastSeenAt`. getStatus() exposes `bridgeConnected` and a combined
+// `scannerReady` so the admin UI stops showing a permanent "Scanner
+// Disconnected" banner (which also hid the detected-UID box).
+// ---------------------------------------------------------------------------
+const BRIDGE_STALE_MS = Number(process.env.BRIDGE_STALE_MS || 12000);
+let bridgeLastSeenAt = null;
+let bridgeInfo = null;
+// Last successful bind, so the bridge can show RFID BOUND on the LCD even
+// though it has no socket connection (see scripts/rfidBridge.js).
+let lastBound = null;
+
+exports.noteBridgeSeen = (info = {}) => {
+  bridgeLastSeenAt = new Date();
+  bridgeInfo = { ...info };
+};
+exports.noteBound = (cardId, ownerId) => {
+  lastBound = { cardId, ownerId: ownerId ? String(ownerId) : null, at: new Date() };
+};
+exports.getLastBound = () => lastBound;
+
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY_MS = 3000;
 
@@ -718,5 +743,13 @@ exports.getStatus = () => {
     device: lastConnectedDevice,
     registrationMode,
     binding: bindingSession,
+    // Split-deployment additions (additive — `connected` keeps its
+    // original serial-only meaning for AdminSettings.vue).
+    bridgeConnected: !!(bridgeLastSeenAt && Date.now() - bridgeLastSeenAt.getTime() < BRIDGE_STALE_MS),
+    bridgeLastSeenAt,
+    bridge: bridgeInfo,
+    scannerReady:
+      !!(serialPort && serialPort.isOpen) ||
+      !!(bridgeLastSeenAt && Date.now() - bridgeLastSeenAt.getTime() < BRIDGE_STALE_MS),
   };
 };

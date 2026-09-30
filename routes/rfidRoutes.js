@@ -15,6 +15,10 @@ router.post('/scan', requireDeviceKey, rfidController.scanCard);
 // This endpoint exposes ONLY the binding mode (no port/config details).
 router.get('/device-status', requireDeviceKey, rfidController.getDeviceStatus);
 
+// Device-key connectivity probe (bridge start-up self-test + rfidDiagnose.js).
+// GET /api/rfid/ping
+router.get('/ping', requireDeviceKey, rfidController.ping);
+
 // All admin routes are protected
 router.use(protect, admin);
 
