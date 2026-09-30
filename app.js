@@ -26,6 +26,16 @@ const clientOrigins = require('./config/clientOrigins');
 
 const app = express();
 
+// Behind Nginx: without this req.ip is always 127.0.0.1, so the [RFID]
+// "source" log line can't tell the bridge PC from anything else.
+app.set('trust proxy', 1);
+
+// Unauthenticated liveness probe — proves DNS + TLS + Nginx + Node without a
+// device key. `curl https://<api-domain>/api/health`
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, serverTime: new Date().toISOString() });
+});
+
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || clientOrigins.includes(origin)) {

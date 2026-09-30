@@ -244,6 +244,7 @@ exports.scanCard = async (req, res, next) => {
     const status = rfidService.getStatus();
     if (status.registrationMode) {
       socketUtil.emitToAdmins('rfid:scanned', { cardId, at: new Date() });
+      rfidService.noteScan(cardId, 'BIND');
       const session = status.binding || {};
       const hasOwner = !!(session.userId || session.coachId);
       console.log(`[RFID] OPERATION: BINDING (REST) — captured ${cardId}, owner=${hasOwner ? (session.userId || session.coachId) : '(none — capture only)'}`);
@@ -270,7 +271,10 @@ exports.scanCard = async (req, res, next) => {
       });
     }
 
+    console.log(`[RFID] OPERATION: ATTENDANCE (REST) — source: ${source}`);
+    rfidService.noteScan(cardId, 'ATTENDANCE');
     const { action, attendance, user } = await attendanceService.processScan(cardId);
+    console.log(`[RFID] Response: ${action} OK for ${user.fullname}`);
 
     // Same message map the Arduino LCD reads from (utils/scanMessages.js)
     // — this REST fallback (used when no serial device is connected, or
@@ -293,6 +297,7 @@ exports.scanCard = async (req, res, next) => {
     // errors thrown by processScan already carry statusCode + a clean message
     if (err.statusCode) {
       const msg = getScanMessage(err.errorType);
+      console.log(`[RFID] Response: ${err.statusCode} ${err.errorType || ''} -> LCD "${msg.lcdLine1}|${msg.lcdLine2}"`);
       return res.status(err.statusCode).json({
         success: false,
         message: msg.title,
