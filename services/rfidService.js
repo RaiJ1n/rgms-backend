@@ -114,6 +114,16 @@ exports.noteBound = (cardId, ownerId) => {
 };
 exports.getLastBound = () => lastBound;
 
+// Last tap that reached the backend over REST (the bridge path), with the
+// operation it was routed to. Lets the admin UI show the detected UID even
+// when its Socket.IO push is lost (Nginx upgrade / auth problems) by polling
+// GET /rfid/status. Admin-only surface — never returned by device-status.
+let lastScan = null;
+exports.noteScan = (cardId, operation) => {
+  lastScan = { cardId, operation, at: new Date() };
+};
+exports.getLastScan = () => lastScan;
+
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY_MS = 3000;
 
@@ -743,6 +753,8 @@ exports.getStatus = () => {
     device: lastConnectedDevice,
     registrationMode,
     binding: bindingSession,
+    lastScan,
+    lastBound,
     // Split-deployment additions (additive — `connected` keeps its
     // original serial-only meaning for AdminSettings.vue).
     bridgeConnected: !!(bridgeLastSeenAt && Date.now() - bridgeLastSeenAt.getTime() < BRIDGE_STALE_MS),
