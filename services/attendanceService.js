@@ -8,6 +8,8 @@ const socketUtil = require('../utils/socket');
 const subscriptionService = require('./subscriptionService');
 const { getScanMessage } = require('../utils/scanMessages');
 const { startOfLocalDay } = require('../utils/localDate');
+const cardLookup = require('./rfidCardLookup');
+const { logUid } = require('../utils/uidHash');
 const { normalizeUid } = require('../utils/normalizeUid');
 
 const httpError = (message, statusCode, errorType) => {
@@ -47,15 +49,15 @@ async function processScan(cardId) {
   // Single explicit line per tap (per diagnostics spec): raw → normalized
   // → match yes/no, so an attendance-mode failure is visible without
   // inferring it from the LCD.
-  console.log(`[RFID] Attendance request — incoming: ${String(raw).trim()} → normalized: ${uid}`);
+  console.log(`[RFID] Attendance request — incoming: ${logUid(raw)} → normalized: ${logUid(uid)}`);
 
   if (!/^[0-9A-F]{8,14}$/i.test(uid)) {
-    console.log(`[RFID] Attendance request — incoming: ${String(raw).trim()} → normalized: ${uid} → match: no (invalid_format)`);
+    console.log(`[RFID] Attendance request — incoming: ${logUid(raw)} → normalized: ${logUid(uid)} → match: no (invalid_format)`);
     throw httpError('Invalid cardId format', 400, 'invalid_format');
   }
 
-  const card = await RFIDCard.findOne({ cardId: uid }).populate('userId').populate('coachId');
-  console.log(`[RFID] Attendance request — incoming: ${String(raw).trim()} → normalized: ${uid} → match: ${card ? 'yes' : 'no'}`);
+  const card = await cardLookup.findByUid(uid).populate('userId').populate('coachId');
+  console.log(`[RFID] Attendance request — incoming: ${logUid(raw)} → normalized: ${logUid(uid)} → match: ${card ? 'yes' : 'no'}`);
 
   // Split into two distinct cases (previously both collapsed into
   // 'card_invalid'): a UID that was never registered at all needs a
@@ -79,6 +81,13 @@ async function processScan(cardId) {
   // to member and employee cards.
   if (card.lastScannedAt && (now - card.lastScannedAt) / 1000 < 10) {
     throw httpError('Duplicate scan prevented (wait 10 seconds)', 429, 'duplicate_scan');
+  }
+
+  // Visitor / temporary pass: its own validation path. It must be checked
+  // BEFORE the userId/coachId branches below — a TEMPORARY card has neither,
+  // and must never fall through to the "not linked" case or to member logic.
+  if (card.cardType === 'TEMPORARY') {
+    return processVisitorScan(card, now);
   }
 
   // Which kind of card is this? Exactly one of userId/coachId should be
@@ -196,6 +205,89 @@ async function processEmployeeScan(card, now) {
 // ---------------------------------------------------------------------------
 // Member attendance
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Visitor / temporary pass (one Manila-local day)
+// ---------------------------------------------------------------------------
+// Rules: card must be active (not revoked — checked by processScan), the
+// current instant must be inside [validFrom, validUntil], and it behaves like
+// a member's daily visit (tap = check-in, second tap = check-out, then done
+// for the day) — but with NO subscription check and NO session deduction, and
+// it never creates or touches a User. The attendance row has guestName and no
+// userId, which the existing analytics already count as a "Non-member".
+async function processVisitorScan(card, now) {
+  const name = card.visitorName || 'Visitor';
+
+  if (!card.validFrom || !card.validUntil) {
+    // Malformed pass — fail closed.
+    emitScanError('visitor_pass_expired', { uid: card.cardId, fullname: name });
+    throw httpError('Visitor pass has no validity window', 403, 'visitor_pass_expired');
+  }
+  if (now < card.validFrom) {
+    emitScanError('visitor_pass_not_yet_valid', { uid: card.cardId, fullname: name, validFrom: card.validFrom });
+    throw httpError('Visitor pass is not valid yet', 403, 'visitor_pass_not_yet_valid');
+  }
+  if (now > card.validUntil) {
+    emitScanError('visitor_pass_expired', { uid: card.cardId, fullname: name, expiredOn: card.validUntil });
+    throw httpError('Visitor pass expired', 403, 'visitor_pass_expired');
+  }
+
+  card.lastScannedAt = now;
+  await card.save();
+
+  // Visitor hardware is re-issued (even the same day, after a revoke), so
+  // "today's visit" is counted only from the moment THIS pass was issued —
+  // otherwise the previous visitor's completed visit would block the next.
+  const startOfDay = card.assignedAt && card.assignedAt > startOfLocalDay(now)
+    ? card.assignedAt
+    : startOfLocalDay(now);
+  let attendance = await Attendance.findOne({
+    rfidCardId: card._id,
+    createdAt: { $gte: startOfDay },
+    checkOut: { $exists: false },
+  });
+
+  let action = 'checkin';
+  if (attendance) {
+    attendance.checkOut = now;
+    await attendance.save();
+    action = 'checkout';
+  } else {
+    const alreadyCompletedToday = await Attendance.findOne({
+      rfidCardId: card._id,
+      createdAt: { $gte: startOfDay },
+      checkOut: { $exists: true },
+    });
+    if (alreadyCompletedToday) {
+      emitScanError('daily_attendance_completed', { uid: card.cardId, fullname: name });
+      throw httpError('Attendance already completed for today', 403, 'daily_attendance_completed');
+    }
+    attendance = await Attendance.create({
+      guestName: name,
+      subjectType: 'member', // keeps the existing "Non-member" analytics bucket
+      rfidCardId: card._id,
+      memberType: 'Regular',
+      checkIn: now,
+      notes: 'Visitor pass',
+    });
+  }
+
+  await AuditLog.create({
+    action: `rfid_visitor_${action}`,
+    meta: { cardId: card.cardId, subjectType: 'visitor', visitorName: name },
+  });
+
+  const attendanceEvent = {
+    type: action,
+    subjectType: 'visitor',
+    at: now,
+    attendance: { _id: attendance._id, checkIn: attendance.checkIn, checkOut: attendance.checkOut },
+    user: { fullname: name, visitor: true },
+  };
+  socketUtil.emitToAdmins('attendance', attendanceEvent);
+
+  return { action, attendance, event: attendanceEvent, user: { fullname: name, visitor: true } };
+}
+
 async function processMemberScan(card, now) {
   const user = card.userId;
 

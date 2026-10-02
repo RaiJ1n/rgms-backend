@@ -114,16 +114,6 @@ exports.noteBound = (cardId, ownerId) => {
 };
 exports.getLastBound = () => lastBound;
 
-// Last tap that reached the backend over REST (the bridge path), with the
-// operation it was routed to. Lets the admin UI show the detected UID even
-// when its Socket.IO push is lost (Nginx upgrade / auth problems) by polling
-// GET /rfid/status. Admin-only surface — never returned by device-status.
-let lastScan = null;
-exports.noteScan = (cardId, operation) => {
-  lastScan = { cardId, operation, at: new Date() };
-};
-exports.getLastScan = () => lastScan;
-
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY_MS = 3000;
 
@@ -505,15 +495,17 @@ async function handleRFIDData(line) {
       const Coach = require('../models/Coach');
       const AuditLog = require('../models/AuditLog');
 
-      const existing = await RFIDCard.findOne({ cardId: uid });
+      const cardLookup = require('./rfidCardLookup');
+      const { identityFor } = require('../utils/uidHash');
+      const existing = await cardLookup.findByUid(uid);
       if (existing) {
         const sameOwner =
           (bindingSession.userId && existing.userId && existing.userId.toString() === String(bindingSession.userId)) ||
           (bindingSession.coachId && existing.coachId && existing.coachId.toString() === String(bindingSession.coachId));
         if (sameOwner) {
           console.log(`[RFID] Binding idempotent — ${uid} already bound to this ${ownerType}`);
-          exports.sendToArduino(`RFID BOUND|${uid.slice(0, 16)}`);
-          socketUtil.emitToAdmins('rfid:bound', { cardId: uid, ownerId, ownerType, at: new Date() });
+          exports.sendToArduino(`RFID BOUND|${existing.cardId.slice(0, 16)}`);
+          socketUtil.emitToAdmins('rfid:bound', { cardId: existing.cardId, ownerId, ownerType, at: new Date() });
         } else {
           console.log(`[RFID] Binding rejected — ${uid} already assigned to another account`);
           exports.sendToArduino('ALREADY|REGISTERED');
@@ -546,8 +538,8 @@ async function handleRFIDData(line) {
         ownerName = coach.fullname;
       }
 
-      await RFIDCard.create({
-        cardId: uid,
+      const created = await RFIDCard.create({
+        ...identityFor(uid),
         userId: bindingSession.userId || undefined,
         coachId: bindingSession.coachId || undefined,
         active: true,
@@ -556,14 +548,14 @@ async function handleRFIDData(line) {
       await AuditLog.create({
         action: 'rfid_register',
         userId: bindingSession.startedBy || undefined,
-        meta: { cardId: uid, ownerId, ownerType, via: 'serial-auto-bind' },
+        meta: { cardId: created.cardId, ownerId, ownerType, via: 'serial-auto-bind' },
       }).catch(() => {});
       if (bindingSession.userId) {
-        socketUtil.emitToUser(bindingSession.userId, 'rfid:updated', { bound: true, cardId: uid, active: true });
+        socketUtil.emitToUser(bindingSession.userId, 'rfid:updated', { bound: true, cardId: created.cardId, active: true });
       }
-      socketUtil.emitToAdmins('rfid:bound', { cardId: uid, ownerId, ownerType, at: new Date() });
-      console.log(`[RFID] Binding successful — ${uid} → ${ownerName}`);
-      exports.sendToArduino(`RFID BOUND|${uid.slice(0, 16)}`);
+      socketUtil.emitToAdmins('rfid:bound', { cardId: created.cardId, ownerId, ownerType, at: new Date() });
+      console.log(`[RFID] Binding successful — ${created.cardId} → ${ownerName}`);
+      exports.sendToArduino(`RFID BOUND|${created.cardId.slice(0, 16)}`);
     } catch (err) {
       console.warn(`[RFID] Binding auto-bind error for ${uid}: ${err.message}`);
       exports.sendToArduino('BIND FAILED|RETRY');
@@ -753,8 +745,6 @@ exports.getStatus = () => {
     device: lastConnectedDevice,
     registrationMode,
     binding: bindingSession,
-    lastScan,
-    lastBound,
     // Split-deployment additions (additive — `connected` keeps its
     // original serial-only meaning for AdminSettings.vue).
     bridgeConnected: !!(bridgeLastSeenAt && Date.now() - bridgeLastSeenAt.getTime() < BRIDGE_STALE_MS),

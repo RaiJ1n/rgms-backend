@@ -63,6 +63,15 @@ router.post('/disconnect', rfidController.disconnectPort);
 // Body: { enabled }
 router.post('/registration-mode', rfidController.setRegistrationMode);
 
+// Visitor / temporary passes (one Manila-local day). Declared BEFORE the
+// /:cardId routes below so "temporary" is never mistaken for a cardId.
+// POST  /api/rfid/temporary               Body: { cardId, visitorName, validDate? }
+// GET   /api/rfid/temporary?status=&limit=
+// PATCH /api/rfid/temporary/:id/revoke
+router.post('/temporary', rfidController.issueTemporaryCard);
+router.get('/temporary', rfidController.listTemporaryCards);
+router.patch('/temporary/:id/revoke', rfidController.revokeTemporaryCard);
+
 // Get RFID card info for a specific member
 // GET /api/rfid/member/:userId
 router.get('/member/:userId', rfidController.getMemberRFID);

@@ -15,6 +15,10 @@ const escapeRegex = require('../utils/escapeRegex');
 const { parsePagination } = require('../utils/paginate');
 const generateReceiptNumber = require('../utils/generateReceiptNumber');
 const ExcelJS = require('exceljs');
+const mongoose = require('mongoose');
+const paymentQuery = require('../services/paymentQueryService');
+const { parseRange } = require('../utils/dateRange');
+const { formatLocalDateLabel } = require('../utils/localDate');
 const { buildMedicalDocumentResponse } = require('./userController');
 
 const getUsers = async (req, res) => {
@@ -73,6 +77,16 @@ const getMembers = async (req, res, next) => {
       if (!latestSubByUser.has(key)) latestSubByUser.set(key, sub);
     }
 
+    // Renewals are stored back-to-back, so the latest row's own startDate can
+    // be in the future. The list/export should show when the CURRENT run of
+    // membership began and when it finally ends.
+    const rowsByUser = new Map();
+    for (const sub of subscriptions) {
+      const key = sub.userId.toString();
+      if (!rowsByUser.has(key)) rowsByUser.set(key, []);
+      rowsByUser.get(key).push(sub);
+    }
+
     const members = users.map((u) => {
       const sub = latestSubByUser.get(u._id.toString());
       return {
@@ -85,7 +99,7 @@ const getMembers = async (req, res, next) => {
         // Section C3: spec's export requires Subscription Start/Expiration
         // Date as separate columns from "Date Joined" (account creation) —
         // already fetched above for deriveStatus, just wasn't surfaced here.
-        subscriptionStart: sub?.startDate || null,
+        subscriptionStart: (sub && subscriptionService.getCoverageWindow(rowsByUser.get(u._id.toString()))?.startDate) || sub?.startDate || null,
         subscriptionExpiration: sub?.endDate || null,
         status: deriveStatus(sub),
         accountActive: u.isActive,
@@ -393,137 +407,139 @@ const markAllNotificationsRead = async (req, res, next) => {
   }
 };
 
+// Payment History list. Filtering, sorting and paging all happen in the
+// database (services/paymentQueryService.js), so they stay correct across
+// pages. Query: search, method, status, planId, customerType, startDate,
+// endDate (YYYY-MM-DD, Manila days, inclusive), sortBy
+// (date|amount|transactionNumber|customer|method|package|status), order
+// (asc|desc), page, limit.
 const getPayments = async (req, res, next) => {
   try {
     const { page, limit, skip, isExport } = parsePagination(req.query);
-    const { search, method, status } = req.query;
-
-    const filter = {};
-    if (method && method !== 'All') filter.paymentMethod = method;
-    if (status && status !== 'All') filter.status = status;
-    if (search) {
-      const re = new RegExp(escapeRegex(search), 'i');
-      // referenceNumber lives on Payment itself; name lives on the
-      // referenced User, which Mongo can't match directly in one query —
-      // so look up matching user ids first, then match either field.
-      const matchingUsers = await User.find({ fullname: re }).select('_id');
-      filter.$or = [
-        { referenceNumber: re },
-        { transactionNumber: re },
-        { userId: { $in: matchingUsers.map((u) => u._id) } },
-      ];
-    }
-
-    const total = await Payment.countDocuments(filter);
-    const payments = await Payment.find(filter)
-      .populate('userId', 'fullname email phone')
-      .populate('planId', 'name duration')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
+    const result = await paymentQuery.listPayments(req.query, { page, limit, skip });
+    if (result.error) return res.status(400).json({ success: false, message: result.error });
 
     res.json({
       success: true,
-      data: payments,
+      data: result.data,
       page,
       limit,
-      total,
-      totalPages: isExport ? 1 : Math.ceil(total / limit),
+      total: result.total,
+      totalPages: isExport ? 1 : Math.ceil(result.total / limit),
+      sortBy: result.sort.key,
+      order: result.sort.order === 1 ? 'asc' : 'desc',
     });
   } catch (error) {
     next(error);
   }
 };
 
-// C2 — Payment History Excel Export. Mirrors getPayments' own
-// search/method/status filtering exactly, so the export always matches
-// what the admin is currently looking at, plus a required date range.
-// Cash ("Walk-in") rows never have an external reference — the
-// system-generated transactionNumber is the receipt of record for
-// those; GCash keeps its member-provided referenceNumber.
+// Summary/report for the SAME filters as the list (backend is the only place
+// totals are computed). Revenue = approved payments only.
+const getPaymentSummary = async (req, res, next) => {
+  try {
+    const built = await paymentQuery.buildFilter(req.query);
+    if (built.error) return res.status(400).json({ success: false, message: built.error });
+    const summary = await paymentQuery.summarize(built.filter);
+    res.json({ success: true, data: summary });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Payment History Excel export. Uses the exact same filter + sort as the
+// list, so the file always matches what the admin is looking at. The date
+// range is optional now (exports everything that matches if omitted). A second
+// "Summary" sheet carries the same totals the on-screen report shows.
+const EXPORT_MAX_ROWS = 5000;
 const exportPaymentsXLSX = async (req, res, next) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
+    const built = await paymentQuery.buildFilter(req.query);
+    if (built.error) return res.status(400).json({ success: false, message: built.error });
+    const sort = paymentQuery.parseSort(req.query);
 
-    const { startDate, endDate, search, method, status } = req.query;
+    const payments = await Payment.aggregate(paymentQuery.listPipeline(built.filter, sort, 0, EXPORT_MAX_ROWS));
 
-    // Spec: "Start date cannot be later than end date."
-    if (new Date(startDate) > new Date(endDate)) {
-      return res.status(400).json({ success: false, message: 'Start date cannot be later than end date.' });
-    }
-
-    const filter = {
-      createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
-    };
-    if (method && method !== 'All') filter.paymentMethod = method;
-    if (status && status !== 'All') filter.status = status;
-    if (search) {
-      const re = new RegExp(escapeRegex(search), 'i');
-      const matchingUsers = await User.find({ fullname: re }).select('_id');
-      filter.$or = [
-        { referenceNumber: re },
-        { transactionNumber: re },
-        { userId: { $in: matchingUsers.map((u) => u._id) } },
-      ];
-    }
-
-    const payments = await Payment.find(filter)
-      .populate('userId', 'fullname email')
-      .populate('planId', 'name')
-      .sort({ createdAt: 1 });
-
-    // Spec: "Handle empty date ranges gracefully. Display an appropriate
-    // message if no records exist." A 200 with an empty XLSX attachment
-    // gives the browser a file to save with no indication anything was
-    // wrong — this returns a normal JSON error instead, which the
-    // frontend can show as a message rather than downloading a blank file.
+    // A 404 JSON message instead of a blank download, as before.
     if (payments.length === 0) {
       return res.status(404).json({ success: false, message: 'No payment records found for the selected range and filters.' });
     }
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Payments');
-
     sheet.columns = [
+      { header: 'Transaction Number', key: 'transactionNumber', width: 24 },
+      { header: 'Date (Asia/Manila)', key: 'date', width: 20 },
+      { header: 'Customer', key: 'customer', width: 26 },
+      { header: 'Customer Type', key: 'customerType', width: 15 },
+      { header: 'Membership / Package', key: 'plan', width: 20 },
+      { header: 'Payment Method', key: 'paymentMethod', width: 16 },
+      { header: 'Reference Number', key: 'referenceNumber', width: 24 },
+      { header: 'Amount', key: 'amount', width: 14, style: { numFmt: '#,##0.00' } },
+      { header: 'Payment Status', key: 'status', width: 16 },
       { header: 'Payment ID', key: 'paymentId', width: 26 },
       { header: 'Member ID', key: 'memberId', width: 26 },
-      { header: 'Member Name', key: 'memberName', width: 24 },
-      { header: 'Amount', key: 'amount', width: 14 },
-      { header: 'Payment Date', key: 'paymentDate', width: 22 },
-      { header: 'Payment Method', key: 'paymentMethod', width: 16 },
-      { header: 'Membership Plan', key: 'plan', width: 20 },
-      { header: 'Approval Status', key: 'status', width: 16 },
-      { header: 'Receipt / Transaction Number', key: 'receiptNumber', width: 28 },
     ];
     sheet.getRow(1).font = { bold: true };
+    sheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const manilaStamp = (d) => {
+      const shifted = new Date(new Date(d).getTime() + 8 * 60 * 60 * 1000);
+      return shifted.toISOString().slice(0, 16).replace('T', ' ');
+    };
 
     for (const p of payments) {
-      const receiptNumber = p.paymentMethod === 'Walk-in'
-        ? (p.transactionNumber || '—')
-        : (p.referenceNumber || p.transactionNumber || '—');
-
       sheet.addRow({
+        transactionNumber: p.transactionNumber || '—',
+        date: manilaStamp(p.createdAt),
+        customer: p.customerName || p.userId?.fullname || '',
+        customerType: p.customerType === 'WALK_IN' ? 'Walk-in (non-member)' : 'Member',
+        plan: p.planId?.name || '—',
+        paymentMethod: p.paymentMethod,
+        // Cash has no external reference — the transaction number is its receipt.
+        referenceNumber: p.referenceNumber || '',
+        amount: p.amount,
+        status: p.status,
         paymentId: p._id.toString(),
         memberId: p.userId?._id?.toString() || '',
-        memberName: p.userId?.fullname || '',
-        amount: p.amount,
-        paymentDate: p.createdAt.toISOString(),
-        paymentMethod: p.paymentMethod,
-        plan: p.planId?.name || '—',
-        status: p.status,
-        receiptNumber,
       });
     }
 
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="payment-history-${startDate}-to-${endDate}.xlsx"`
-    );
+    const summary = await paymentQuery.summarize(built.filter);
+    const sum = workbook.addWorksheet('Summary');
+    sum.columns = [{ width: 34 }, { width: 18 }, { width: 18 }];
+    const addPair = (label, value, fmt) => {
+      const row = sum.addRow([label, value]);
+      if (fmt) row.getCell(2).numFmt = fmt;
+      return row;
+    };
+    const filterBits = [];
+    if (req.query.startDate || req.query.endDate) filterBits.push(`${req.query.startDate || '…'} to ${req.query.endDate || '…'}`);
+    for (const k of ['method', 'status', 'customerType', 'search']) if (typeof req.query[k] === 'string' && req.query[k] && req.query[k] !== 'All') filterBits.push(`${k}: ${req.query[k]}`);
+    sum.addRow(['Payment History Summary']).font = { bold: true, size: 14 };
+    sum.addRow(['Filters', filterBits.join(' | ') || 'None']);
+    sum.addRow([]);
+    addPair('Total transactions', summary.totalTransactions);
+    addPair('Total revenue (approved)', summary.totalRevenue, '#,##0.00');
+    addPair('Total cash (approved)', summary.totalCash, '#,##0.00');
+    addPair('Total GCash (approved)', summary.totalGcash, '#,##0.00');
+    if (summary.totalOtherMethods) addPair('Other methods (approved)', summary.totalOtherMethods, '#,##0.00');
+    addPair('Pending (count)', summary.byStatus.pending.count);
+    addPair('Rejected (count)', summary.byStatus.rejected.count);
+    sum.addRow([]);
+    const head = sum.addRow(['Package', 'Transactions', 'Revenue (approved)']);
+    head.font = { bold: true };
+    for (const p of summary.byPackage) {
+      const row = sum.addRow([p.name, p.transactions, p.revenue]);
+      row.getCell(3).numFmt = '#,##0.00';
+    }
+    sum.addRow([]);
+    sum.addRow(['Members — revenue', summary.byCustomerType.MEMBER.revenue]).getCell(2).numFmt = '#,##0.00';
+    sum.addRow(['Walk-in (non-member) — revenue', summary.byCustomerType.WALK_IN.revenue]).getCell(2).numFmt = '#,##0.00';
+
+    const tag = (req.query.startDate && req.query.endDate) ? `${req.query.startDate}-to-${req.query.endDate}` : formatLocalDateLabel(new Date());
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="payment-history-${String(tag).replace(/[^0-9A-Za-z-]/g, '')}.xlsx"`);
     await workbook.xlsx.write(res);
     res.end();
   } catch (error) {
@@ -596,24 +612,74 @@ const rejectPayment = async (req, res, next) => {
   }
 };
 
+// Records a payment taken at the front desk.
+//   MEMBER   (default): { userId, planId, amount, paymentMethod?, referenceNumber? }
+//            -> approved payment + membership created/extended (unchanged).
+//   WALK_IN  (non-member): { customerType: 'WALK_IN', customerName, planId, amount }
+//            -> approved CASH payment only. No account, no subscription, no
+//            reference number; the system receipt number is the receipt.
+//            Limited to 1-day plans: a multi-day membership needs an account
+//            to attach to, so those are refused with a clear message.
 const createManualPayment = async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
     const { userId, amount, planId, paymentMethod, referenceNumber } = req.body;
-
-    const user = await User.findOne({ _id: userId, role: 'user' });
-    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+    const isWalkIn = req.body.customerType === 'WALK_IN';
 
     const plan = await MembershipPlan.findById(planId);
     if (!plan) return res.status(404).json({ success: false, message: 'Membership plan not found' });
 
-    const payment = await Payment.create({
+    let payment;
+    if (isWalkIn) {
+      const customerName = typeof req.body.customerName === 'string' ? req.body.customerName.trim() : '';
+      if (customerName.length < 2 || customerName.length > 60) {
+        return res.status(400).json({ success: false, message: 'Enter the customer name (2–60 characters).' });
+      }
+      if (!subscriptionService.isDayPassPlan(plan)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Walk-in (non-member) customers can only buy a 1-day pass. Create a member account for longer memberships.',
+        });
+      }
+      // Cashier double-click guard: the identical walk-in payment seconds ago.
+      const dup = await Payment.findOne({
+        customerType: 'WALK_IN',
+        customerName: new RegExp(`^${escapeRegex(customerName)}$`, 'i'),
+        planId,
+        amount,
+        createdAt: { $gte: new Date(Date.now() - 15 * 1000) },
+      });
+      if (dup) {
+        return res.status(409).json({ success: false, message: `This walk-in payment was just recorded (${dup.transactionNumber}).` });
+      }
+      payment = await createPaymentWithReceipt({
+        customerType: 'WALK_IN',
+        customerName,
+        planId,
+        paymentMethod: 'Walk-in', // cash at the desk (the system's existing name for it)
+        amount,
+        status: 'approved',
+      });
+      await payment.populate('planId', 'name duration');
+
+      socketUtil.emitToAdmins('stats:refresh');
+      socketUtil.emitToAdmins('payment:updated', payment);
+      return res.status(201).json({ success: true, message: 'Walk-in payment recorded', data: payment, subscription: null, subscriptionError: null });
+    }
+
+    // ---- member payment (existing behaviour) ----
+    if (!userId || !mongoose.isValidObjectId(userId)) {
+      return res.status(400).json({ success: false, message: 'A member must be selected' });
+    }
+    const user = await User.findOne({ _id: userId, role: 'user' });
+    if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+
+    payment = await createPaymentWithReceipt({
       userId,
       planId,
       referenceNumber: referenceNumber || undefined,
-      transactionNumber: generateReceiptNumber(),
       paymentMethod: paymentMethod || 'Walk-in',
       amount,
       status: 'approved',
@@ -650,6 +716,21 @@ const createManualPayment = async (req, res, next) => {
     next(error);
   }
 };
+
+// Receipt numbers are random + date-prefixed, with a unique index as the
+// backstop. In the (very unlikely) event of a collision, retry with a new one
+// rather than failing the cashier's payment.
+async function createPaymentWithReceipt(fields, attempts = 4) {
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await Payment.create({ ...fields, transactionNumber: generateReceiptNumber() });
+    } catch (err) {
+      const isReceiptCollision = err && err.code === 11000 && /transactionNumber/.test(String(err.message));
+      if (!isReceiptCollision || i === attempts - 1) throw err;
+    }
+  }
+  return null; // unreachable
+}
 
 const getSubscriptions = async (req, res, next) => {
   try {
@@ -900,6 +981,7 @@ module.exports = {
   markAllNotificationsRead,
   getPayments,
   exportPaymentsXLSX,
+  getPaymentSummary,
   createManualPayment,
   approvePayment,
   rejectPayment,
