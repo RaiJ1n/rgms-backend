@@ -496,9 +496,12 @@ const getDashboardSummary = async (req, res, next) => {
     const userId = req.user._id;
     const year = parseInt(req.query.year, 10) || new Date().getFullYear();
 
-    const [rfidCard, subscription, recentVisits, monthlyAttendance, streakWeeks] = await Promise.all([
+    const [rfidCard, subscription, activeRows, recentVisits, monthlyAttendance, streakWeeks] = await Promise.all([
       RFIDCard.findOne({ userId }),
       Subscription.findOne({ userId, status: 'active' }).sort({ endDate: -1 }).populate('planId'),
+      // All active windows, to show the continuous span (renewals are queued
+      // back-to-back, so the furthest row alone starts in the future).
+      Subscription.find({ userId, status: 'active' }).select('startDate endDate'),
       Attendance.find({ userId }).sort({ checkIn: -1 }).limit(10),
       getMonthlyAttendanceCounts(userId, year),
       getActiveStreakWeeks(userId),
@@ -522,7 +525,7 @@ const getDashboardSummary = async (req, res, next) => {
         subscription: subscription
           ? {
               planName: subscription.planId?.name || null,
-              startDate: subscription.startDate,
+              startDate: (require('../services/subscriptionService').getCoverageWindow(activeRows) || subscription).startDate,
               endDate: subscription.endDate,
               // Session Remaining (Group 3): sessionsUsed is deducted by
               // subscriptionService.recordAttendanceSession on RFID

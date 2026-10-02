@@ -39,31 +39,44 @@ const httpError = (message, statusCode) => {
   return err;
 };
 
-// Generic replacement for the old switch(plan.duration.toLowerCase()){...}.
-// Works for any plan, present or future, as long as it has durationValue
-// (Number) and durationUnit ('day' | 'week' | 'month' | 'year') set.
+// Calendar math in the gym's own timezone (Asia/Manila, UTC+8, no DST) —
+// never the server's. The old version used setDate/setMonth, which run in the
+// server's local zone AND overflow at month-ends: 31 Jan + 1 month became
+// 3 Mar (2 Mar in a leap year). Now 31 Jan + 1 month = 28/29 Feb.
+//
+// Semantics (unchanged from before, now documented): a membership is a
+// half-open window [startDate, endDate) of real instants. Access lapses at the
+// same wall-clock time of day it was bought, `duration` later — a Daily plan
+// bought 3:00pm lasts until 3:00pm the next day. An extension starts exactly
+// where the previous window ends, so windows touch but never overlap.
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+
 const addDuration = (date, value, unit) => {
-  const result = new Date(date);
+  const shifted = new Date(new Date(date).getTime() + MANILA_OFFSET_MS); // read UTC fields as Manila wall-clock
   switch (unit) {
     case 'day':
-      result.setDate(result.getDate() + value);
+      shifted.setUTCDate(shifted.getUTCDate() + value);
       break;
     case 'week':
-      result.setDate(result.getDate() + value * 7);
+      shifted.setUTCDate(shifted.getUTCDate() + value * 7);
       break;
     case 'month':
-      result.setMonth(result.getMonth() + value);
+    case 'year': {
+      const months = unit === 'year' ? value * 12 : value;
+      const day = shifted.getUTCDate();
+      shifted.setUTCDate(1); // avoid overflow while changing the month
+      shifted.setUTCMonth(shifted.getUTCMonth() + months);
+      const lastDay = new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, 0)).getUTCDate();
+      shifted.setUTCDate(Math.min(day, lastDay));
       break;
-    case 'year':
-      result.setFullYear(result.getFullYear() + value);
-      break;
+    }
     default:
       // Should be unreachable — durationUnit is schema-enforced — but
       // fail loudly rather than silently producing a wrong date if the
       // schema and this list ever drift apart.
       throw httpError(`Unsupported duration unit: ${unit}`, 400);
   }
-  return result;
+  return new Date(shifted.getTime() - MANILA_OFFSET_MS);
 };
 
 // The user's currently-effective expiration, independent of how many
@@ -85,7 +98,44 @@ const getExpiryBaseDate = async (userId) => {
   return now;
 };
 
-const createSubscription = async ({ userId, planId, paymentId }) => {
+// Two approvals for the same member landing at the same moment would both
+// read the same "latest endDate" and both extend from it — the second grant
+// would be swallowed. Serialising per member closes that. (In-process lock:
+// correct for the single PM2 instance this app runs as. If you ever run the
+// backend in cluster mode, move this to a DB-level guard.)
+const userLocks = new Map();
+const withUserLock = async (userId, fn) => {
+  const key = String(userId);
+  const prev = userLocks.get(key) || Promise.resolve();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const tail = prev.then(() => gate);
+  userLocks.set(key, tail);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (userLocks.get(key) === tail) userLocks.delete(key);
+  }
+};
+
+// The member's continuous coverage right now: from the earliest start among
+// their not-yet-expired windows to the furthest end. Extensions are
+// back-to-back, so this is one unbroken span even when several purchases are
+// stacked. Dashboards use it so "start" is when the current run of membership
+// began, not the start of a queued future window.
+// `rows` = that member's Subscription documents (any order).
+const getCoverageWindow = (rows, now = new Date()) => {
+  if (!rows || !rows.length) return null;
+  const live = rows.filter((r) => r.endDate > now);
+  const pool = live.length ? live : [rows.slice().sort((a, b) => b.endDate - a.endDate)[0]];
+  const start = new Date(Math.min(...pool.map((r) => r.startDate.getTime())));
+  const end = new Date(Math.max(...pool.map((r) => r.endDate.getTime())));
+  return { startDate: start, endDate: end };
+};
+
+const createSubscriptionUnlocked = async ({ userId, planId, paymentId }) => {
   const plan = await MembershipPlan.findById(planId);
   if (!plan) {
     throw httpError('Plan not found', 404);
@@ -99,6 +149,9 @@ const createSubscription = async ({ userId, planId, paymentId }) => {
   const payment = await Payment.findById(paymentId);
   if (!payment) {
     throw httpError('Payment not found', 404);
+  }
+  if (!payment.userId) {
+    throw httpError('This payment is not linked to a member account', 400);
   }
   if (payment.userId.toString() !== userId.toString()) {
     throw httpError('Payment does not belong to this user', 403);
@@ -116,8 +169,12 @@ const createSubscription = async ({ userId, planId, paymentId }) => {
   // always starting from now — this is the actual fix. If they have no
   // subscription yet, or their latest one has already lapsed,
   // getExpiryBaseDate() falls back to `now` on its own (requirement 5).
+  // The new window STARTS where the current one ends (or now, if lapsed /
+  // none) — previously startDate was always "now", so a renewal bought on
+  // 30 Sep for a plan running to 30 Oct was stored as 30 Sep -> 30 Nov, i.e.
+  // overlapping the window already paid for.
   const baseDate = await getExpiryBaseDate(userId);
-  const startDate = new Date();
+  const startDate = baseDate;
   const endDate = addDuration(baseDate, plan.durationValue, plan.durationUnit);
 
   let subscription;
@@ -149,6 +206,8 @@ const createSubscription = async ({ userId, planId, paymentId }) => {
 
   return subscription;
 };
+
+const createSubscription = (args) => withUserLock(args.userId, () => createSubscriptionUnlocked(args));
 
 const getMySubscription = async (userId) => {
   // The currently-controlling subscription is whichever row has the
@@ -186,4 +245,12 @@ const recordAttendanceSession = async (userId) => {
   return subscription;
 };
 
-module.exports = { getAllPlans, createSubscription, getMySubscription, recordAttendanceSession, isDayPassPlan };
+module.exports = {
+   getAllPlans, 
+   createSubscription, 
+   getMySubscription, 
+   recordAttendanceSession, 
+   isDayPassPlan, 
+   getCoverageWindow, 
+   addDuration 
+  };

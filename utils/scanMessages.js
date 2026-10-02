@@ -104,6 +104,20 @@ const SCAN_MESSAGES = {
     title: 'Attendance Already Completed',
     body: 'You have already completed your check-in and check-out for today.',
   },
+  visitor_pass_expired: {
+    lcdLine1: 'VISITOR PASS',
+    lcdLine2: 'EXPIRED',
+    buzzer: 'short_3',
+    title: 'Visitor Pass Expired',
+    body: 'This visitor pass is no longer valid. Please ask the front desk for a new one.',
+  },
+  visitor_pass_not_yet_valid: {
+    lcdLine1: 'VISITOR PASS',
+    lcdLine2: 'NOT VALID YET',
+    buzzer: 'short_3',
+    title: 'Visitor Pass Not Valid Yet',
+    body: 'This visitor pass is not valid until its issued date.',
+  },
   invalid_format: {
     lcdLine1: 'READ ERROR',
     lcdLine2: 'TRY AGAIN',

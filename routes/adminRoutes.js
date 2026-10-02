@@ -126,18 +126,18 @@ router.put('/notifications/:id/read', adminController.markNotificationRead);
 router.put('/notifications/mark-all-read', adminController.markAllNotificationsRead);
 
 router.get('/payments', adminController.getPayments);
-router.get(
-  '/payments/export',
-  [
-    query('startDate').isISO8601().withMessage('Start date is required'),
-    query('endDate').isISO8601().withMessage('End date is required'),
-  ],
-  adminController.exportPaymentsXLSX
-);
+// Same filters as the list; totals are computed on the backend only.
+router.get('/payments/summary', adminController.getPaymentSummary);
+// Date range is optional (validated in the handler as real Manila dates).
+router.get('/payments/export', adminController.exportPaymentsXLSX);
 router.post(
   '/payments/manual',
   [
-    body('userId').isMongoId().withMessage('A member must be selected'),
+    // userId is only required for member payments — the handler enforces it;
+    // a walk-in (non-member) payment sends customerType + customerName instead.
+    body('userId').optional({ values: 'falsy' }).isMongoId().withMessage('Invalid member selected'),
+    body('customerType').optional().isIn(['MEMBER', 'WALK_IN']).withMessage('Invalid customer type'),
+    body('customerName').optional().isString().trim(),
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
     body('planId').isMongoId().withMessage('A membership plan must be selected'),
     body('paymentMethod').optional().isString().trim(),

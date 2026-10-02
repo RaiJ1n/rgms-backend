@@ -68,13 +68,7 @@ const PREFERRED_PORT = process.env.SERIAL_PORT || null;
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 8000);
 const DEBUG = process.env.BRIDGE_DEBUG === '1';
 const BRIDGE_ID = process.env.BRIDGE_ID || os.hostname();
-const BRIDGE_VERSION = '2.1';
-// An Arduino Uno RESETS every time a program opens its serial port (DTR
-// toggles the reset line) and needs ~2s to boot. Anything written before
-// that is lost, so the first MODE: sync used to vanish and the LCD showed
-// the wrong mode. Wait this long after every (re)open before writing.
-const BOOT_WAIT_MS = Number(process.env.ARDUINO_BOOT_WAIT_MS || 2500);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const BRIDGE_VERSION = '2.0';
 const POLL_IDLE_MS = 3000;
 const POLL_BIND_MS = 1000;
 
@@ -235,12 +229,9 @@ async function openSerial() {
         port = null;
         scheduleReconnect('port closed / Arduino unplugged');
       });
+      log('Serial open. Tap a card.');
       lastMode = null; // force MODE re-sync after (re)connect
-      log(`Serial open. Waiting ${BOOT_WAIT_MS}ms for the Arduino to finish its auto-reset...`);
-      sleep(BOOT_WAIT_MS).then(() => {
-        log('Arduino ready. Tap a card.');
-        resolve();
-      });
+      resolve();
     });
   });
 }
@@ -253,23 +244,8 @@ async function handleSerialLine(rawLine) {
   if (!raw) return;
   if (DEBUG) log(`serial RX: ${JSON.stringify(raw)}`);
 
-  // Lines the sketch prefixes with '#' are its own diagnostics (RC522 self
-  // test etc.) — show them, never treat them as UIDs.
-  if (raw.startsWith('#')) {
-    log(`Arduino: ${raw.slice(1).trim()}`);
-    return;
-  }
-
   const uid = normalizeUid(raw);
   if (!isValidUid(uid)) {
-    // A line that is purely hex but the wrong length IS a card read that we
-    // cannot use (e.g. a 10-byte UID). Tell the person at the reader instead
-    // of letting the Arduino sit until its own timeout fires.
-    if (/^[0-9A-F]{2,}$/.test(uid)) {
-      warn(`Card read with unsupported UID length (${uid.length} hex chars): ${uid}`);
-      await writeLine('READ ERROR|BAD UID LEN');
-      return;
-    }
     // Boot banner / debug output / echo of our own MODE: command, etc.
     log(`Arduino says (not a UID, ignored): ${JSON.stringify(raw.slice(0, 60))}`);
     return;
@@ -312,11 +288,6 @@ async function handleSerialLine(rawLine) {
       }
     } else if (body.message) {
       await writeLine(`${String(body.message).slice(0, 16)}|`);
-    } else {
-      // Server answered but gave nothing displayable. Still answer the
-      // Arduino — silence would make its own timeout fire and blame the wrong layer.
-      warn(`HTTP ${r.status} had no lcd/message. Body: ${String(r.text).slice(0, 120).replace(/\s+/g, ' ')}`);
-      await writeLine(`SERVER REPLY|HTTP ${r.status}`);
     }
     if (body.bindingMode && body.bound === false && body.data) {
       log(`Binding tap captured: ${uid} (waiting for the admin UI to pick the member)`);

@@ -1,7 +1,20 @@
 const mongoose = require('mongoose');
 
 const paymentSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  // Optional since walk-in (non-member) payments: a customer who pays at the
+  // front desk without an account has no User. Member payments always set it
+  // — enforced in the controllers (createManualPayment / submitPayment), not
+  // here, the same way this codebase already handles other conditional rules.
+  // Old documents all have a userId, so nothing needs migrating.
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+  // 'MEMBER' (default — also what every pre-existing payment is) or 'WALK_IN'.
+  // Never query { customerType: 'MEMBER' }: old documents don't have the
+  // field. Use { $ne: 'WALK_IN' } (see services/paymentQueryService.js).
+  customerType: { type: String, enum: ['MEMBER', 'WALK_IN'], default: 'MEMBER' },
+  // Name given at the desk for a WALK_IN payment. Unset for member payments
+  // (their name comes from the User).
+  customerName: { type: String, trim: true, maxlength: 60 },
   planId: { type: mongoose.Schema.Types.ObjectId, ref: 'MembershipPlan' },
 
   // No longer required: true at the schema level. GCash payments still
@@ -23,5 +36,13 @@ const paymentSchema = new mongoose.Schema({
   amount: { type: Number, required: true },
   status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
 }, { timestamps: true });
+
+// Payment History filters/sorts/reports by these; without indexes each list
+// call scans the whole collection as the history grows. (Index builds are
+// automatic on first start; on a small gym DB they are instant.)
+paymentSchema.index({ createdAt: -1 });
+paymentSchema.index({ status: 1, createdAt: -1 });
+paymentSchema.index({ paymentMethod: 1, createdAt: -1 });
+paymentSchema.index({ customerType: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Payment', paymentSchema);

@@ -38,6 +38,17 @@ const submitPayment = async (req, res, next) => {
       throw httpError('Amount is required when no plan is specified', 400);
     }
 
+    // Accidental double submission: a second PENDING payment for the same
+    // plan would, once both are approved, stack two memberships. A genuine
+    // renewal is still allowed — just not while an identical request is
+    // still waiting for the front desk.
+    if (planId) {
+      const pendingSamePlan = await Payment.findOne({ userId: req.user._id, planId, status: 'pending' });
+      if (pendingSamePlan) {
+        throw httpError('You already have a pending payment for this membership. Please wait for it to be reviewed.', 409);
+      }
+    }
+
     const payment = await Payment.create({
       userId: req.user._id,
       planId: planId || undefined,

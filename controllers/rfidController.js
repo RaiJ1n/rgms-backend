@@ -7,6 +7,8 @@ const AuditLog = require('../models/AuditLog');
 const socketUtil = require('../utils/socket');
 const rfidService = require('../services/rfidService');
 const { normalizeUid, isValidUid } = require('../utils/normalizeUid');
+const cardLookup = require('../services/rfidCardLookup');
+const { identityFor, logUid } = require('../utils/uidHash');
 
 exports.registerCard = async (req, res, next) => {
   try {
@@ -38,7 +40,7 @@ exports.registerCard = async (req, res, next) => {
     // dashes, colons, trims \r\n, uppercases. "A1 B2 C3 D4" and
     // "a1b2c3d4" both bind as "A1B2C3D4".
     const cardId = normalizeUid(rawCardId);
-    console.log(`[RFID] Bind request — incoming: ${String(rawCardId).trim()} → normalized: ${cardId}`);
+    console.log(`[RFID] Bind request — incoming: ${logUid(rawCardId)} → normalized: ${logUid(cardId)}`);
 
     // Validate UID format (hexadecimal, 8-14 characters)
     if (!/^[0-9A-F]{8,14}$/i.test(cardId)) {
@@ -50,7 +52,7 @@ exports.registerCard = async (req, res, next) => {
 
     // Check if card already registered (normalized, so "A1 B2 C3 D4"
     // can never silently duplicate "A1B2C3D4")
-    const existing = await RFIDCard.findOne({ cardId });
+    const existing = await cardLookup.findByUid(cardId);
     if (existing) {
       const sameOwner =
         (userId && existing.userId && existing.userId.toString() === userId) ||
@@ -77,7 +79,7 @@ exports.registerCard = async (req, res, next) => {
 
     // Create RFID card document
     const card = new RFIDCard({
-      cardId,
+      ...identityFor(cardId), // opaque reference + keyed hash when RFID_HASH_SECRET is set
       userId: userId || undefined,
       coachId: coachId || undefined,
       active: true,
@@ -138,7 +140,10 @@ exports.listCards = async (req, res, next) => {
     const { limit = 10 } = req.query;
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
 
-    const cards = await RFIDCard.find()
+    // Visitor passes have their own list (GET /temporary); keep them out of
+    // the member/employee card list. `$ne` (not `=== 'MEMBER'`) so cards
+    // created before cardType existed are still returned.
+    const cards = await RFIDCard.find({ cardType: { $ne: 'TEMPORARY' } })
       .populate('userId', 'fullname email')
       .populate('coachId', 'fullname email')
       .sort({ createdAt: -1 })
@@ -164,21 +169,21 @@ async function autoBindCaptured(cardId, session) {
   const ownerId = session.userId || session.coachId;
   const ownerType = session.userId ? 'member' : 'employee';
 
-  const existing = await RFIDCard.findOne({ cardId });
+  const existing = await cardLookup.findByUid(cardId);
   if (existing) {
     const sameOwner =
       (session.userId && existing.userId && existing.userId.toString() === String(session.userId)) ||
       (session.coachId && existing.coachId && existing.coachId.toString() === String(session.coachId));
     if (sameOwner) {
-      rfidService.noteBound(cardId, ownerId);
-      socketUtil.emitToAdmins('rfid:bound', { cardId, ownerId, ownerType, at: new Date() });
-      return { status: 200, bound: true, message: 'Card already bound to this account', lcd: { line1: 'RFID BOUND', line2: cardId.slice(0, 16) } };
+      rfidService.noteBound(existing.cardId, ownerId);
+      socketUtil.emitToAdmins('rfid:bound', { cardId: existing.cardId, ownerId, ownerType, at: new Date() });
+      return { status: 200, bound: true, message: 'Card already bound to this account', lcd: { line1: 'RFID BOUND', line2: existing.cardId.slice(0, 16) } };
     }
     socketUtil.emitToAdmins('rfid:error', {
       title: 'RFID Already Registered',
       message: 'This RFID card is already assigned to another account.',
       timestamp: new Date(),
-      uid: cardId,
+      uid: logUid(cardId),
     });
     return { status: 409, bound: false, message: 'RFID already registered', lcd: { line1: 'ALREADY', line2: 'REGISTERED' } };
   }
@@ -194,8 +199,8 @@ async function autoBindCaptured(cardId, session) {
     ownerName = coach.fullname;
   }
 
-  await RFIDCard.create({
-    cardId,
+  const created = await RFIDCard.create({
+    ...identityFor(cardId),
     userId: session.userId || undefined,
     coachId: session.coachId || undefined,
     active: true,
@@ -204,13 +209,13 @@ async function autoBindCaptured(cardId, session) {
   await AuditLog.create({
     action: 'rfid_register',
     userId: session.startedBy || undefined,
-    meta: { cardId, ownerId, ownerType, via: 'bridge-auto-bind' },
+    meta: { cardId: created.cardId, ownerId, ownerType, via: 'bridge-auto-bind' },
   }).catch(() => {});
-  if (session.userId) socketUtil.emitToUser(session.userId, 'rfid:updated', { bound: true, cardId, active: true });
-  socketUtil.emitToAdmins('rfid:bound', { cardId, ownerId, ownerType, at: new Date() });
-  rfidService.noteBound(cardId, ownerId);
-  console.log(`[RFID] Binding successful (REST) — ${cardId} → ${ownerName}`);
-  return { status: 201, bound: true, message: 'Card registered successfully', lcd: { line1: 'RFID BOUND', line2: cardId.slice(0, 16) } };
+  if (session.userId) socketUtil.emitToUser(session.userId, 'rfid:updated', { bound: true, cardId: created.cardId, active: true });
+  socketUtil.emitToAdmins('rfid:bound', { cardId: created.cardId, ownerId, ownerType, at: new Date() });
+  rfidService.noteBound(created.cardId, ownerId);
+  console.log(`[RFID] Binding successful (REST) — ${created.cardId} → ${ownerName}`);
+  return { status: 201, bound: true, message: 'Card registered successfully', lcd: { line1: 'RFID BOUND', line2: created.cardId.slice(0, 16) } };
 }
 
 exports.scanCard = async (req, res, next) => {
@@ -222,7 +227,7 @@ exports.scanCard = async (req, res, next) => {
     }
     const cardId = normalizeUid(rawCardId);
     const source = req.headers['x-bridge-id'] || req.ip;
-    console.log(`[RFID] REST scan — source: ${source} — incoming: ${String(rawCardId).trim()} → normalized: ${cardId}`);
+    console.log(`[RFID] REST scan — source: ${source} — incoming: ${logUid(rawCardId)} → normalized: ${logUid(cardId)}`);
 
     // A tap that is not a real hex UID (stray serial text, debug lines) must
     // never be broadcast as a "detected card" nor reach the binding UI.
@@ -244,7 +249,6 @@ exports.scanCard = async (req, res, next) => {
     const status = rfidService.getStatus();
     if (status.registrationMode) {
       socketUtil.emitToAdmins('rfid:scanned', { cardId, at: new Date() });
-      rfidService.noteScan(cardId, 'BIND');
       const session = status.binding || {};
       const hasOwner = !!(session.userId || session.coachId);
       console.log(`[RFID] OPERATION: BINDING (REST) — captured ${cardId}, owner=${hasOwner ? (session.userId || session.coachId) : '(none — capture only)'}`);
@@ -271,10 +275,7 @@ exports.scanCard = async (req, res, next) => {
       });
     }
 
-    console.log(`[RFID] OPERATION: ATTENDANCE (REST) — source: ${source}`);
-    rfidService.noteScan(cardId, 'ATTENDANCE');
     const { action, attendance, user } = await attendanceService.processScan(cardId);
-    console.log(`[RFID] Response: ${action} OK for ${user.fullname}`);
 
     // Same message map the Arduino LCD reads from (utils/scanMessages.js)
     // — this REST fallback (used when no serial device is connected, or
@@ -297,7 +298,6 @@ exports.scanCard = async (req, res, next) => {
     // errors thrown by processScan already carry statusCode + a clean message
     if (err.statusCode) {
       const msg = getScanMessage(err.errorType);
-      console.log(`[RFID] Response: ${err.statusCode} ${err.errorType || ''} -> LCD "${msg.lcdLine1}|${msg.lcdLine2}"`);
       return res.status(err.statusCode).json({
         success: false,
         message: msg.title,
@@ -541,9 +541,9 @@ exports.getEmployeeRFID = async (req, res, next) => {
 
 exports.deactivateCard = async (req, res, next) => {
   try {
-    const cardId = normalizeUid(req.params.cardId);
+    const cardId = cardLookup.paramToRef(req.params.cardId);
     
-    const card = await RFIDCard.findOne({ cardId });
+    const card = await cardLookup.findByCardParam(cardId);
     
     if (!card) {
       return res.status(404).json({
@@ -574,7 +574,7 @@ exports.deactivateCard = async (req, res, next) => {
 
 exports.reassignCard = async (req, res, next) => {
   try {
-    const cardId = normalizeUid(req.params.cardId);
+    const cardId = cardLookup.paramToRef(req.params.cardId);
     const { userId } = req.body;
     
     if (!userId) {
@@ -584,7 +584,7 @@ exports.reassignCard = async (req, res, next) => {
       });
     }
     
-    const card = await RFIDCard.findOne({ cardId });
+    const card = await cardLookup.findByCardParam(cardId);
     
     if (!card) {
       return res.status(404).json({
@@ -636,21 +636,183 @@ exports.reassignCard = async (req, res, next) => {
 // unbind deletes the RFIDCard document and verifies removal.
 exports.unbindCard = async (req, res, next) => {
   try {
-    const cardId = normalizeUid(req.params.cardId);
-    const card = await RFIDCard.findOne({ cardId });
+    const cardId = cardLookup.paramToRef(req.params.cardId);
+    console.log(`[RFID] OPERATION: UNBIND — card ${logUid(cardId)}`);
+    const card = await cardLookup.findByCardParam(cardId);
     if (!card) {
       return res.status(404).json({ success: false, message: 'Card not found' });
     }
+    // UNBIND has its own rules: it detaches a MEMBER/EMPLOYEE card. A visitor
+    // pass is not bound to anyone — it is revoked (history is kept), never deleted.
+    if (card.cardType === 'TEMPORARY') {
+      return res.status(400).json({ success: false, message: 'This is a visitor pass. Revoke it from the Visitor Passes page instead.' });
+    }
     const ownerId = card.userId || card.coachId;
+    const ref = card.cardId;
     await card.deleteOne();
     await AuditLog.create({
       action: 'rfid_unbind',
       userId: req.user._id,
-      meta: { cardId },
+      meta: { cardId: ref },
     });
     if (ownerId) socketUtil.emitToUser(ownerId, 'rfid:updated', { bound: false });
-    console.log(`[RFID] Card unbound: ${cardId}`);
-    res.json({ success: true, message: 'Card unbound — it will no longer authenticate', data: { cardId } });
+    console.log(`[RFID] Card unbound: ${ref}`);
+    res.json({ success: true, message: 'Card unbound — it will no longer authenticate', data: { cardId: ref } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Visitor / temporary passes (valid for one Manila-local day)
+// ---------------------------------------------------------------------------
+const MAX_PASS_DAYS_AHEAD = 30;
+
+function passStatus(card, now = new Date()) {
+  if (!card.active) return 'REVOKED';
+  if (card.validUntil && now > card.validUntil) return 'EXPIRED';
+  if (card.validFrom && now < card.validFrom) return 'UPCOMING';
+  return 'ACTIVE';
+}
+
+function presentPass(card, now = new Date()) {
+  const o = card.toObject ? card.toObject() : card;
+  return {
+    _id: o._id,
+    cardId: o.cardId,
+    visitorName: o.visitorName,
+    status: passStatus(o, now),
+    validFrom: o.validFrom,
+    validUntil: o.validUntil,
+    validDate: o.validFrom ? formatLocalDateLabel(o.validFrom) : null,
+    lastScannedAt: o.lastScannedAt,
+    issuedAt: o.assignedAt || o.createdAt,
+  };
+}
+
+// POST /api/rfid/temporary
+// Body: { cardId, visitorName, validDate? }   validDate = 'YYYY-MM-DD' (Manila), default today
+exports.issueTemporaryCard = async (req, res, next) => {
+  try {
+    const rawCardId = req.body.cardId ?? req.body.uid;
+    const visitorName = typeof req.body.visitorName === 'string' ? req.body.visitorName.trim() : '';
+    if (!rawCardId) return res.status(400).json({ success: false, message: 'cardId is required' });
+    if (!visitorName) return res.status(400).json({ success: false, message: 'Enter the visitor name' });
+    if (visitorName.length > 60) return res.status(400).json({ success: false, message: 'Visitor name is too long (max 60 characters)' });
+
+    const cardId = normalizeUid(rawCardId);
+    if (!isValidUid(cardId)) {
+      return res.status(400).json({ success: false, message: 'That is not a valid RFID UID' });
+    }
+
+    // Date rule (Asia/Manila, decided on the server — the browser date is
+    // never trusted): today or a near-future day only. A past day makes no
+    // sense for a pass that grants access.
+    const now = new Date();
+    let day = startOfLocalDay(now);
+    if (req.body.validDate) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.body.validDate))) {
+        return res.status(400).json({ success: false, message: 'validDate must be YYYY-MM-DD' });
+      }
+      const parsed = new Date(`${req.body.validDate}T00:00:00+08:00`);
+      if (Number.isNaN(parsed.getTime()) || formatLocalDateLabel(parsed) !== req.body.validDate) {
+        return res.status(400).json({ success: false, message: 'That is not a valid date' });
+      }
+      day = startOfLocalDay(parsed);
+    }
+    if (day < startOfLocalDay(now)) {
+      return res.status(400).json({ success: false, message: 'This date has already passed. Please select a current or future date.' });
+    }
+    if (day.getTime() - startOfLocalDay(now).getTime() > MAX_PASS_DAYS_AHEAD * 24 * 60 * 60 * 1000) {
+      return res.status(400).json({ success: false, message: `A visitor pass can be issued at most ${MAX_PASS_DAYS_AHEAD} days ahead` });
+    }
+    const validFrom = day;
+    const validUntil = endOfLocalDay(day);
+
+    const existing = await cardLookup.findByUid(cardId);
+    let card;
+    if (existing) {
+      // A member/employee card can never be converted into a visitor pass.
+      if (existing.cardType !== 'TEMPORARY') {
+        return res.status(409).json({ success: false, message: 'This card is registered to a member/employee and cannot be used as a visitor pass' });
+      }
+      // Visitor hardware is reused: a finished/revoked pass can be re-issued,
+      // but never overwrite a pass that is still live for someone else.
+      if (passStatus(existing, now) === 'ACTIVE' || passStatus(existing, now) === 'UPCOMING') {
+        return res.status(409).json({
+          success: false,
+          message: `This card already has a live visitor pass (${existing.visitorName}, valid ${formatLocalDateLabel(existing.validFrom)}). Revoke it first.`,
+        });
+      }
+      existing.visitorName = visitorName;
+      existing.validFrom = validFrom;
+      existing.validUntil = validUntil;
+      existing.active = true;
+      existing.assignedAt = now;
+      existing.issuedBy = req.user._id;
+      existing.lastScannedAt = undefined;
+      card = await existing.save();
+    } else {
+      card = await RFIDCard.create({
+        ...identityFor(cardId),
+        cardType: 'TEMPORARY',
+        visitorName,
+        validFrom,
+        validUntil,
+        active: true,
+        assignedAt: now,
+        issuedBy: req.user._id,
+      });
+    }
+
+    await AuditLog.create({
+      action: 'rfid_visitor_pass_issued',
+      userId: req.user._id,
+      meta: { cardId: card.cardId, visitorName, validDate: formatLocalDateLabel(validFrom), reissued: !!existing },
+    }).catch(() => {});
+    console.log(`[RFID] Visitor pass issued — ${card.cardId} → "${visitorName}" valid ${formatLocalDateLabel(validFrom)} (Asia/Manila)`);
+
+    res.status(201).json({ success: true, message: 'Visitor pass issued', data: presentPass(card, now) });
+  } catch (err) {
+    if (err && err.code === 11000) {
+      return res.status(409).json({ success: false, message: 'This card was just registered. Please try again.' });
+    }
+    next(err);
+  }
+};
+
+// GET /api/rfid/temporary?status=ACTIVE|EXPIRED|REVOKED|UPCOMING&limit=50
+exports.listTemporaryCards = async (req, res, next) => {
+  try {
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const cards = await RFIDCard.find({ cardType: 'TEMPORARY' }).sort({ validFrom: -1, createdAt: -1 }).limit(limit);
+    const now = new Date();
+    let data = cards.map((c) => presentPass(c, now));
+    const wanted = String(req.query.status || '').toUpperCase();
+    if (['ACTIVE', 'EXPIRED', 'REVOKED', 'UPCOMING'].includes(wanted)) {
+      data = data.filter((c) => c.status === wanted);
+    }
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// PATCH /api/rfid/temporary/:id/revoke
+exports.revokeTemporaryCard = async (req, res, next) => {
+  try {
+    const card = await RFIDCard.findById(req.params.id);
+    if (!card || card.cardType !== 'TEMPORARY') {
+      return res.status(404).json({ success: false, message: 'Visitor pass not found' });
+    }
+    card.active = false;
+    await card.save();
+    await AuditLog.create({
+      action: 'rfid_visitor_pass_revoked',
+      userId: req.user._id,
+      meta: { cardId: card.cardId, visitorName: card.visitorName },
+    }).catch(() => {});
+    res.json({ success: true, message: 'Visitor pass revoked', data: presentPass(card) });
   } catch (err) {
     next(err);
   }
