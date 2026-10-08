@@ -11,6 +11,7 @@ const { startOfLocalDay } = require('../utils/localDate');
 const cardLookup = require('./rfidCardLookup');
 const { logUid } = require('../utils/uidHash');
 const { normalizeUid } = require('../utils/normalizeUid');
+const visitorPassService = require('./visitorPassService');
 
 const httpError = (message, statusCode, errorType) => {
   const err = new Error(message);
@@ -164,6 +165,7 @@ async function processEmployeeScan(card, now) {
     attendance = await Attendance.create({
       coachId: coach._id,
       subjectType: 'employee',
+      attendanceType: 'EMPLOYEE',
       rfidCardId: card._id,
       checkIn: now,
     });
@@ -209,83 +211,180 @@ async function processEmployeeScan(card, now) {
 // Visitor / temporary pass (one Manila-local day)
 // ---------------------------------------------------------------------------
 // Rules: card must be active (not revoked — checked by processScan), the
-// current instant must be inside [validFrom, validUntil], and it behaves like
-// a member's daily visit (tap = check-in, second tap = check-out, then done
-// for the day) — but with NO subscription check and NO session deduction, and
-// it never creates or touches a User. The attendance row has guestName and no
-// userId, which the existing analytics already count as a "Non-member".
-async function processVisitorScan(card, now) {
-  const name = card.visitorName || 'Visitor';
+// current instant must be inside [validFrom, validUntil] to CHECK IN, and it
+// behaves like a member's daily visit (tap = check-in, second tap = check-out,
+// then done) — but with NO subscription check and NO session deduction, and it
+// never creates or touches a User.
+//
+// Check-out is the event that ends the visit: in ONE operation it closes the
+// Attendance row AND stamps the card's checkedOutAt, which flips the pass to
+// CHECKED_OUT and releases the card for the next visitor (see
+// visitorPassService). A visitor who is already inside may still check out
+// after validUntil — otherwise a late tap would strand the visit open forever.
 
-  if (!card.validFrom || !card.validUntil) {
-    // Malformed pass — fail closed.
-    emitScanError('visitor_pass_expired', { uid: card.cardId, fullname: name });
-    throw httpError('Visitor pass has no validity window', 403, 'visitor_pass_expired');
-  }
-  if (now < card.validFrom) {
-    emitScanError('visitor_pass_not_yet_valid', { uid: card.cardId, fullname: name, validFrom: card.validFrom });
-    throw httpError('Visitor pass is not valid yet', 403, 'visitor_pass_not_yet_valid');
-  }
-  if (now > card.validUntil) {
-    emitScanError('visitor_pass_expired', { uid: card.cardId, fullname: name, expiredOn: card.validUntil });
-    throw httpError('Visitor pass expired', 403, 'visitor_pass_expired');
-  }
+// `emit` is false for admin-entered attendance: a rejected manual entry is
+// reported to the admin by the HTTP response, not as a "denied scan" popup.
+function denyVisitor(errorType, message, status, card, name, emit, extra) {
+  if (emit) emitScanError(errorType, { uid: card.cardId, fullname: name, ...extra });
+  return httpError(message, status, errorType);
+}
 
-  card.lastScannedAt = now;
-  await card.save();
-
+async function findOpenVisit(card, now) {
   // Visitor hardware is re-issued (even the same day, after a revoke), so
   // "today's visit" is counted only from the moment THIS pass was issued —
   // otherwise the previous visitor's completed visit would block the next.
-  const startOfDay = card.assignedAt && card.assignedAt > startOfLocalDay(now)
+  const since = card.assignedAt && card.assignedAt > startOfLocalDay(now)
     ? card.assignedAt
     : startOfLocalDay(now);
-  let attendance = await Attendance.findOne({
+  const open = await Attendance.findOne({
     rfidCardId: card._id,
-    createdAt: { $gte: startOfDay },
+    createdAt: { $gte: since },
     checkOut: { $exists: false },
   });
+  return { since, open };
+}
 
-  let action = 'checkin';
-  if (attendance) {
-    attendance.checkOut = now;
-    await attendance.save();
-    action = 'checkout';
-  } else {
-    const alreadyCompletedToday = await Attendance.findOne({
-      rfidCardId: card._id,
-      createdAt: { $gte: startOfDay },
-      checkOut: { $exists: true },
-    });
-    if (alreadyCompletedToday) {
-      emitScanError('daily_attendance_completed', { uid: card.cardId, fullname: name });
-      throw httpError('Attendance already completed for today', 403, 'daily_attendance_completed');
-    }
+function assertPassWindow(card, now, name, emit) {
+  if (!card.validFrom || !card.validUntil) {
+    throw denyVisitor('visitor_pass_expired', 'Visitor pass has no validity window', 403, card, name, emit);
+  }
+  if (now < card.validFrom) {
+    throw denyVisitor('visitor_pass_not_yet_valid', 'Visitor pass is not valid yet', 403, card, name, emit, { validFrom: card.validFrom });
+  }
+  if (now > card.validUntil) {
+    throw denyVisitor('visitor_pass_expired', 'Visitor pass expired', 403, card, name, emit, { expiredOn: card.validUntil });
+  }
+}
+
+async function visitorCheckIn(card, now, { manual = false, adminId = null } = {}) {
+  const name = card.visitorName || 'Visitor';
+  const emit = !manual;
+  assertPassWindow(card, now, name, emit);
+
+  // The card document is the lock: only one caller can flip it from
+  // "unused" to "checked in", so a double tap / two admins cannot create two
+  // attendance rows for the same visit.
+  const locked = await RFIDCard.findOneAndUpdate(
+    { _id: card._id, active: true, checkedInAt: null, checkedOutAt: null },
+    { $set: { checkedInAt: now, lastScannedAt: now } },
+    { new: true },
+  );
+  if (!locked) {
+    throw denyVisitor('daily_attendance_completed', 'This visitor pass has already been used for a visit', 403, card, name, emit);
+  }
+
+  let attendance;
+  try {
     attendance = await Attendance.create({
       guestName: name,
       subjectType: 'member', // keeps the existing "Non-member" analytics bucket
+      attendanceType: 'VISITOR',
       rfidCardId: card._id,
       memberType: 'Regular',
       checkIn: now,
-      notes: 'Visitor pass',
+      notes: manual ? 'Visitor pass (manually recorded by admin)' : 'Visitor pass',
     });
+  } catch (err) {
+    // Undo the lock so the pass is not left looking "inside" with no attendance.
+    await RFIDCard.updateOne({ _id: card._id }, { $unset: { checkedInAt: 1 } }).catch(() => {});
+    throw err;
+  }
+  card.checkedInAt = now;
+  card.lastScannedAt = now;
+  return finishVisitorEvent(card, attendance, 'checkin', name, now, adminId, manual);
+}
+
+async function visitorCheckOut(card, open, now, { manual = false, adminId = null } = {}) {
+  const name = card.visitorName || 'Visitor';
+
+  // Atomic: only the call that actually closes the row proceeds.
+  const attendance = await Attendance.findOneAndUpdate(
+    { _id: open._id, checkOut: { $exists: false } },
+    { $set: { checkOut: now } },
+    { new: true },
+  );
+  if (!attendance) {
+    throw denyVisitor('duplicate_scan', 'This visitor has already checked out', 409, card, name, !manual);
   }
 
+  // Card side of the same checkout. If this write were ever lost, the
+  // attendance row is still correct and reconcilePass() repairs the card on
+  // the next read/issue — the visitor's checkout itself must not fail for it.
+  try {
+    await RFIDCard.updateOne(
+      { _id: card._id },
+      { $set: { checkedOutAt: now, lastScannedAt: now, checkedInAt: card.checkedInAt || open.checkIn } },
+    );
+    card.checkedOutAt = now;
+  } catch (err) {
+    console.error('[RFID] Visitor checkout: card release write failed — will be reconciled', err);
+  }
+  return finishVisitorEvent(card, attendance, 'checkout', name, now, adminId, manual);
+}
+
+async function finishVisitorEvent(card, attendance, action, name, now, adminId, manual) {
   await AuditLog.create({
-    action: `rfid_visitor_${action}`,
-    meta: { cardId: card.cardId, subjectType: 'visitor', visitorName: name },
-  });
+    action: `${manual ? 'admin_' : 'rfid_'}visitor_${action}`,
+    ...(adminId ? { userId: adminId } : {}),
+    meta: { cardId: card.cardId, subjectType: 'visitor', visitorName: name, ...(action === 'checkout' ? { cardReleased: true } : {}) },
+  }).catch(() => {});
 
   const attendanceEvent = {
     type: action,
     subjectType: 'visitor',
+    attendanceType: 'VISITOR',
     at: now,
     attendance: { _id: attendance._id, checkIn: attendance.checkIn, checkOut: attendance.checkOut },
     user: { fullname: name, visitor: true },
   };
   socketUtil.emitToAdmins('attendance', attendanceEvent);
+  if (manual) socketUtil.emitToAdmins('stats:refresh');
 
   return { action, attendance, event: attendanceEvent, user: { fullname: name, visitor: true } };
+}
+
+async function processVisitorScan(card, now) {
+  const name = card.visitorName || 'Visitor';
+  const { since, open } = await findOpenVisit(card, now);
+
+  // Someone already inside always gets to check out (even past validUntil).
+  if (open) return visitorCheckOut(card, open, now);
+
+  // Visit already finished on this pass.
+  if (card.checkedOutAt) {
+    throw denyVisitor('daily_attendance_completed', 'Attendance already completed for today', 403, card, name, true);
+  }
+  assertPassWindow(card, now, name, true);
+
+  // Legacy / drifted rows: a completed visit with no checkedOutAt on the card.
+  const completed = await Attendance.findOne({ rfidCardId: card._id, createdAt: { $gte: since }, checkOut: { $exists: true } });
+  if (completed) {
+    await visitorPassService.reconcilePass(card);
+    throw denyVisitor('daily_attendance_completed', 'Attendance already completed for today', 403, card, name, true);
+  }
+
+  return visitorCheckIn(card, now);
+}
+
+// Admin-entered visitor attendance (Dashboard → Add Attendance → Visitor Pass).
+// Goes through exactly the same check-in / check-out code as an RFID tap, so
+// the pass, the attendance row and the card can never disagree.
+async function manualVisitorAttendance({ passId, action, adminId }) {
+  const card = await RFIDCard.findById(passId);
+  if (!card || card.cardType !== 'TEMPORARY') throw httpError('Visitor pass not found', 404, 'not_found');
+  if (!card.active) throw httpError('This visitor pass has been revoked', 409, 'revoked');
+
+  await visitorPassService.reconcilePass(card);
+  const now = new Date();
+  const { open } = await findOpenVisit(card, now);
+
+  if (action === 'checkout') {
+    if (!open) throw httpError('This visitor is not currently checked in', 409, 'not_checked_in');
+    return visitorCheckOut(card, open, now, { manual: true, adminId });
+  }
+  if (open) throw httpError('This visitor is already checked in', 409, 'already_checked_in');
+  if (card.checkedOutAt) throw httpError('This visitor has already checked out — the visit is complete', 409, 'already_completed');
+  return visitorCheckIn(card, now, { manual: true, adminId });
 }
 
 async function processMemberScan(card, now) {
@@ -381,6 +480,7 @@ async function processMemberScan(card, now) {
     attendance = await Attendance.create({
       userId: user._id,
       subjectType: 'member',
+      attendanceType: 'MEMBER',
       rfidCardId: card._id,
       checkIn: now,
       // No admin present at a card scan to pick Regular/Student manually,
@@ -423,4 +523,4 @@ async function processMemberScan(card, now) {
   return { action, attendance, event: attendanceEvent, user };
 }
 
-module.exports = { processScan };
+module.exports = { processScan, manualVisitorAttendance };

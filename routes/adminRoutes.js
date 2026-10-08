@@ -165,6 +165,8 @@ router.post(
   '/attendance/manual',
   [
     body('userId').optional().isMongoId().withMessage('Invalid member selected'),
+    body('visitorPassId').optional().isMongoId().withMessage('Invalid visitor pass selected'),
+    body('action').optional().isIn(['checkin', 'checkout']).withMessage('Action must be checkin or checkout'),
     body('guestName').optional().isString().trim().notEmpty().withMessage('Enter a name'),
     body('memberType').optional().isIn(['Regular', 'Student']).withMessage('Type must be Regular or Student'),
     body('notes').optional().isString().trim(),

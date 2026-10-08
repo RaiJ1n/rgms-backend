@@ -18,7 +18,8 @@ const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
 const paymentQuery = require('../services/paymentQueryService');
 const { parseRange } = require('../utils/dateRange');
-const { formatLocalDateLabel } = require('../utils/localDate');
+const { formatLocalDateLabel, startOfLocalDay } = require('../utils/localDate');
+const attendanceService = require('../services/attendanceService');
 const { buildMedicalDocumentResponse } = require('./userController');
 
 const getUsers = async (req, res) => {
@@ -740,55 +741,135 @@ const getSubscriptions = async (req, res, next) => {
     next(error);
   }
 };
+// Admin "Add Attendance". Three kinds of person, each with its own validation,
+// reusing the system's existing attendance rules instead of a parallel set:
+//   - member        { userId, action? }       same one-visit-per-day rule as RFID
+//   - visitor pass  { visitorPassId, action? } goes through the SAME service code
+//                                              as an RFID tap (pass + attendance +
+//                                              card stay consistent)
+//   - walk-in guest { guestName }              free-text, no account/pass (unchanged)
+// action = 'checkin' (default) | 'checkout'. Time is always the server's now.
 const createManualAttendance = async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    const { userId, guestName, memberType, notes } = req.body;
+    const { userId, guestName, visitorPassId, memberType, notes } = req.body;
+    const action = req.body.action === 'checkout' ? 'checkout' : 'checkin';
 
-    // Exactly one of userId / guestName: an existing member picked by
-    // search, or a free-text name for someone with no account. The route
-    // validation allows either to be absent individually, so this is the
-    // one place enforcing that precisely one of them is actually set.
-    if (!userId && !guestName) {
-      return res.status(400).json({ success: false, message: 'Select a member or enter a name' });
+    const given = [userId, guestName, visitorPassId].filter(Boolean).length;
+    if (given === 0) {
+      return res.status(400).json({ success: false, message: 'Select a member, a visitor pass, or enter a name' });
     }
-    if (userId && guestName) {
-      return res.status(400).json({ success: false, message: 'Provide either a member or a guest name, not both' });
+    if (given > 1) {
+      return res.status(400).json({ success: false, message: 'Choose only one: a member, a visitor pass, or a guest name' });
     }
 
-    let user = null;
+    // ---- Visitor pass ------------------------------------------------------
+    if (visitorPassId) {
+      try {
+        const result = await attendanceService.manualVisitorAttendance({
+          passId: visitorPassId,
+          action,
+          adminId: req.user._id,
+        });
+        await result.attendance.populate('rfidCardId', 'cardType');
+        return res.status(201).json({
+          success: true,
+          message: action === 'checkout' ? 'Visitor checked out — card is available again' : 'Visitor attendance recorded',
+          data: result.attendance,
+        });
+      } catch (err) {
+        if (err.statusCode && err.statusCode < 500) {
+          return res.status(err.statusCode).json({ success: false, message: err.message, errorType: err.errorType });
+        }
+        throw err;
+      }
+    }
+
+    const startOfDay = startOfLocalDay();
+
+    // ---- Member ------------------------------------------------------------
     if (userId) {
-      user = await User.findOne({ _id: userId, role: 'user' });
+      const user = await User.findOne({ _id: userId, role: 'user' });
       if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
+      if (!user.isActive) {
+        return res.status(403).json({ success: false, message: 'This member account has been deactivated' });
+      }
+
+      const open = await Attendance.findOne({ userId: user._id, createdAt: { $gte: startOfDay }, checkOut: { $exists: false } });
+
+      if (action === 'checkout') {
+        if (!open) return res.status(409).json({ success: false, message: `${user.fullname} is not checked in today` });
+        const closed = await Attendance.findOneAndUpdate(
+          { _id: open._id, checkOut: { $exists: false } },
+          { $set: { checkOut: new Date() } },
+          { new: true },
+        );
+        if (!closed) return res.status(409).json({ success: false, message: `${user.fullname} has already checked out` });
+        await closed.populate('userId', 'fullname email phone');
+        socketUtil.emitToAdmins('stats:refresh');
+        socketUtil.emitToAdmins('attendance', {
+          type: 'checkout', subjectType: 'member', attendanceType: 'MEMBER',
+          attendance: { _id: closed._id, checkIn: closed.checkIn, checkOut: closed.checkOut },
+          user: { _id: user._id, fullname: user.fullname },
+        });
+        return res.status(200).json({ success: true, message: 'Member checked out', data: closed });
+      }
+
+      // Same One-Tap-Per-Day rule the RFID reader enforces.
+      if (open) return res.status(409).json({ success: false, message: `${user.fullname} is already checked in` });
+      const completed = await Attendance.findOne({
+        userId: user._id, subjectType: 'member', createdAt: { $gte: startOfDay }, checkOut: { $exists: true },
+      });
+      if (completed) {
+        return res.status(409).json({ success: false, message: `${user.fullname} already completed attendance today` });
+      }
+
+      const attendance = await Attendance.create({
+        userId: user._id,
+        subjectType: 'member',
+        attendanceType: 'MEMBER',
+        memberType: memberType === 'Student' ? 'Student' : 'Regular',
+        checkIn: new Date(),
+        notes: notes || 'Manually recorded by admin',
+      });
+      await attendance.populate('userId', 'fullname email phone');
+
+      // Session deduction (Group 3): a genuine new check-in on a real member
+      // account. No-ops for a Day Pass plan or a member with no subscription
+      // on file — see subscriptionService.recordAttendanceSession.
+      await subscriptionService.recordAttendanceSession(user._id);
+
+      socketUtil.emitToAdmins('stats:refresh');
+      socketUtil.emitToAdmins('attendance', {
+        type: 'checkin', subjectType: 'member', attendanceType: 'MEMBER',
+        attendance: { _id: attendance._id, checkIn: attendance.checkIn },
+        user: { _id: user._id, fullname: user.fullname },
+        data: attendance,
+      });
+      return res.status(201).json({ success: true, message: 'Attendance recorded', data: attendance });
     }
 
+    // ---- Walk-in guest (no account, no pass) --------------------------------
+    if (action === 'checkout') {
+      return res.status(400).json({ success: false, message: 'Walk-in guests have no check-out. Use a visitor pass to track a visit.' });
+    }
     const attendance = await Attendance.create({
-      userId: userId || undefined,
-      guestName: userId ? undefined : guestName.trim(),
+      guestName: guestName.trim(),
+      subjectType: 'member',
+      attendanceType: 'GUEST',
       memberType: memberType === 'Student' ? 'Student' : 'Regular',
       checkIn: new Date(),
       notes: notes || 'Manually recorded by admin',
     });
-    await attendance.populate('userId', 'fullname email phone');
-
-    // Session deduction (Group 3): only when this attendance entry is
-    // tied to a real member account — a free-text guestName has no
-    // subscription to deduct from. No-ops for a Day Pass plan or a
-    // member with no subscription on file — see
-    // subscriptionService.recordAttendanceSession.
-    if (user) {
-      await subscriptionService.recordAttendanceSession(user._id);
-    }
-
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('attendance', {
-      type: 'checkin',
-      user: { fullname: user ? user.fullname : attendance.guestName },
+      type: 'checkin', subjectType: 'member', attendanceType: 'GUEST',
+      attendance: { _id: attendance._id, checkIn: attendance.checkIn },
+      user: { fullname: attendance.guestName },
       data: attendance,
     });
-
     res.status(201).json({ success: true, message: 'Attendance recorded', data: attendance });
   } catch (error) {
     next(error);
