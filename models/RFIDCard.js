@@ -41,6 +41,15 @@ const rfidCardSchema = new mongoose.Schema({
   validUntil: { type: Date },
   issuedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
+  // Visit state for a TEMPORARY card (denormalised from Attendance, written in
+  // the same operation as the attendance check-in/out so they cannot drift).
+  // Both are cleared when the card is re-issued to the next visitor.
+  //   checkedInAt set, checkedOutAt unset  -> visitor is inside (ACTIVE)
+  //   checkedOutAt set                     -> visit finished (CHECKED_OUT) and
+  //                                           the card is AVAILABLE again
+  checkedInAt: { type: Date },
+  checkedOutAt: { type: Date },
+
   active: { type: Boolean, default: true },
   lastScannedAt: { type: Date },
   assignedAt: { type: Date },

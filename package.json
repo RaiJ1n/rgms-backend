@@ -6,6 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node main.js",
+    "test": "node --test tests/visitorFlow.test.js",
     "dev": "nodemon main.js"
   },
   "dependencies": {

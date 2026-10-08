@@ -9,6 +9,7 @@ const rfidService = require('../services/rfidService');
 const { normalizeUid, isValidUid } = require('../utils/normalizeUid');
 const cardLookup = require('../services/rfidCardLookup');
 const { identityFor, logUid } = require('../utils/uidHash');
+const visitorPassService = require('../services/visitorPassService');
 
 exports.registerCard = async (req, res, next) => {
   try {
@@ -309,6 +310,14 @@ exports.scanCard = async (req, res, next) => {
   }
 };
 
+// Adds a reliable `attendanceType` (MEMBER | VISITOR | EMPLOYEE | GUEST) to a
+// row: the stored field when present, otherwise derived server-side for rows
+// written before the field existed. The frontend never has to guess.
+function withAttendanceType(doc) {
+  const o = doc.toObject ? doc.toObject() : doc;
+  return { ...o, attendanceType: Attendance.resolveType(o, o.rfidCardId) };
+}
+
 exports.getLogs = async (req, res, next) => {
   try {
     const { startDate, endDate, page = 1, limit = 50 } = req.query;
@@ -331,6 +340,7 @@ exports.getLogs = async (req, res, next) => {
     const logs = await Attendance.find(filter)
       .populate('userId', 'fullname email phone')
       .populate('coachId', 'fullname email')
+      .populate('rfidCardId', 'cardType')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNum);
@@ -340,7 +350,7 @@ exports.getLogs = async (req, res, next) => {
     
     res.json({
       success: true,
-      data: logs,
+      data: logs.map(withAttendanceType),
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -363,11 +373,12 @@ exports.todayAttendance = async (req, res, next) => {
     })
       .populate('userId', 'fullname email phone')
       .populate('coachId', 'fullname email')
+      .populate('rfidCardId', 'cardType')
       .sort({ checkIn: 1 }); // Sort by check-in time
-    
+
     res.json({
       success: true,
-      data: logs,
+      data: logs.map(withAttendanceType),
       date: formatLocalDateLabel(start),
       count: logs.length,
     });
@@ -668,27 +679,9 @@ exports.unbindCard = async (req, res, next) => {
 // ---------------------------------------------------------------------------
 const MAX_PASS_DAYS_AHEAD = 30;
 
-function passStatus(card, now = new Date()) {
-  if (!card.active) return 'REVOKED';
-  if (card.validUntil && now > card.validUntil) return 'EXPIRED';
-  if (card.validFrom && now < card.validFrom) return 'UPCOMING';
-  return 'ACTIVE';
-}
-
-function presentPass(card, now = new Date()) {
-  const o = card.toObject ? card.toObject() : card;
-  return {
-    _id: o._id,
-    cardId: o.cardId,
-    visitorName: o.visitorName,
-    status: passStatus(o, now),
-    validFrom: o.validFrom,
-    validUntil: o.validUntil,
-    validDate: o.validFrom ? formatLocalDateLabel(o.validFrom) : null,
-    lastScannedAt: o.lastScannedAt,
-    issuedAt: o.assignedAt || o.createdAt,
-  };
-}
+// Status / availability rules live in services/visitorPassService.js so the
+// scan flow, this controller and the repair script all agree.
+const { passStatus, presentPass, availableFilter, reconcilePass } = visitorPassService;
 
 // POST /api/rfid/temporary
 // Body: { cardId, visitorName, validDate? }   validDate = 'YYYY-MM-DD' (Manila), default today
@@ -736,22 +729,35 @@ exports.issueTemporaryCard = async (req, res, next) => {
       if (existing.cardType !== 'TEMPORARY') {
         return res.status(409).json({ success: false, message: 'This card is registered to a member/employee and cannot be used as a visitor pass' });
       }
-      // Visitor hardware is reused: a finished/revoked pass can be re-issued,
-      // but never overwrite a pass that is still live for someone else.
-      if (passStatus(existing, now) === 'ACTIVE' || passStatus(existing, now) === 'UPCOMING') {
+      // Visitor hardware is reused. A card is released for the next visitor
+      // when the previous visit is CHECKED OUT (or revoked / past its day) —
+      // never while it is still PENDING / UPCOMING / ACTIVE.
+      await reconcilePass(existing); // heal a checkout whose card write was lost
+      if (!visitorPassService.isCardAvailable(existing, now)) {
+        const st = passStatus(existing, now);
         return res.status(409).json({
           success: false,
-          message: `This card already has a live visitor pass (${existing.visitorName}, valid ${formatLocalDateLabel(existing.validFrom)}). Revoke it first.`,
+          message: st === 'ACTIVE'
+            ? `This card is currently in use by ${existing.visitorName} (checked in). It becomes available after they check out.`
+            : `This card is currently assigned to ${existing.visitorName} (valid ${formatLocalDateLabel(existing.validFrom)}). Revoke it first or wait until the visit is checked out.`,
         });
       }
-      existing.visitorName = visitorName;
-      existing.validFrom = validFrom;
-      existing.validUntil = validUntil;
-      existing.active = true;
-      existing.assignedAt = now;
-      existing.issuedBy = req.user._id;
-      existing.lastScannedAt = undefined;
-      card = await existing.save();
+      // Atomic claim: the filter re-checks availability inside the write, so
+      // two admins assigning the same card at the same moment cannot both win.
+      card = await RFIDCard.findOneAndUpdate(
+        { _id: existing._id, ...availableFilter(now) },
+        {
+          $set: {
+            visitorName, validFrom, validUntil, active: true,
+            assignedAt: now, issuedBy: req.user._id,
+          },
+          $unset: { lastScannedAt: 1, checkedInAt: 1, checkedOutAt: 1 },
+        },
+        { new: true },
+      );
+      if (!card) {
+        return res.status(409).json({ success: false, message: 'This card was just assigned to another visitor. Choose a different card.' });
+      }
     } else {
       card = await RFIDCard.create({
         ...identityFor(cardId),
@@ -781,16 +787,19 @@ exports.issueTemporaryCard = async (req, res, next) => {
   }
 };
 
-// GET /api/rfid/temporary?status=ACTIVE|EXPIRED|REVOKED|UPCOMING&limit=50
+// GET /api/rfid/temporary?status=PENDING|ACTIVE|CHECKED_OUT|EXPIRED|REVOKED|UPCOMING&available=true&limit=50
 exports.listTemporaryCards = async (req, res, next) => {
   try {
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const cards = await RFIDCard.find({ cardType: 'TEMPORARY' }).sort({ validFrom: -1, createdAt: -1 }).limit(limit);
+    for (const c of cards) await reconcilePass(c);
     const now = new Date();
     let data = cards.map((c) => presentPass(c, now));
     const wanted = String(req.query.status || '').toUpperCase();
-    if (['ACTIVE', 'EXPIRED', 'REVOKED', 'UPCOMING'].includes(wanted)) {
+    if (['PENDING', 'ACTIVE', 'CHECKED_OUT', 'EXPIRED', 'REVOKED', 'UPCOMING'].includes(wanted)) {
       data = data.filter((c) => c.status === wanted);
+    } else if (String(req.query.available || '') === 'true') {
+      data = data.filter((c) => c.cardAvailable);
     }
     res.json({ success: true, data });
   } catch (err) {
@@ -804,6 +813,9 @@ exports.revokeTemporaryCard = async (req, res, next) => {
     const card = await RFIDCard.findById(req.params.id);
     if (!card || card.cardType !== 'TEMPORARY') {
       return res.status(404).json({ success: false, message: 'Visitor pass not found' });
+    }
+    if (!card.active) {
+      return res.status(409).json({ success: false, message: 'This visitor pass is already revoked' });
     }
     card.active = false;
     await card.save();
