@@ -86,12 +86,17 @@ let boundBaselineSet = false;
 let suppressBoundUntil = 0;
 let pollTimer = null;
 
+// HTTP header values must be plain ASCII. A PC hostname such as "Raijin’s-PC"
+// (curly apostrophe) makes fetch() throw a TypeError BEFORE anything is sent,
+// which used to surface on the LCD as SERVER ERROR / NO RESPONSE for every tap.
+const headerSafe = (v) => String(v || '').replace(/[^\x20-\x7E]/g, '?').slice(0, 100);
+
 const baseHeaders = () => ({
   'Content-Type': 'application/json',
-  'x-device-key': DEVICE_KEY,
-  'x-bridge-id': BRIDGE_ID,
+  'x-device-key': DEVICE_KEY.trim(),
+  'x-bridge-id': headerSafe(BRIDGE_ID),
   'x-bridge-version': BRIDGE_VERSION,
-  'x-bridge-serial': currentPortPath || '',
+  'x-bridge-serial': headerSafe(currentPortPath),
 });
 
 const ts = () => new Date().toISOString().slice(11, 19);

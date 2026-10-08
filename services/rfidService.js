@@ -424,11 +424,18 @@ exports.disconnectPort = async () => {
 
 function closeCurrentPort() {
   return new Promise((resolve) => {
-    if (serialPort && serialPort.isOpen) {
-      serialPort.removeAllListeners();
-      serialPort.close(() => resolve());
+    // removeAllListeners() strips the 'error' handler too. A write still
+    // queued on the old port then fails ("Operation aborted") with nobody
+    // listening, and Node kills the whole backend. Always leave a no-op
+    // 'error' listener on a port we are discarding.
+    const old = serialPort;
+    if (old) {
+      old.removeAllListeners();
+      old.on('error', () => {});
+    }
+    if (old && old.isOpen) {
+      old.close(() => resolve());
     } else {
-      if (serialPort) serialPort.removeAllListeners();
       serialPort = null;
       resolve();
     }
@@ -627,7 +634,13 @@ function handleDisconnection() {
         if (err) console.warn('[RFID] Error while closing port:', err.message);
       });
     }
+    // removeAllListeners() also strips our own 'error' handler. Any write that
+    // was still queued when the port closed then fails with "Operation aborted"
+    // and emits 'error' on a listener-less stream -> Node throws "Unhandled
+    // 'error' event" and the whole backend dies. Keep a no-op listener on the
+    // dead port so those late errors are swallowed.
     serialPort.removeAllListeners();
+    serialPort.on('error', () => {});
     serialPort = null;
   }
 
@@ -666,7 +679,9 @@ exports.closeRFID = () => {
 // ============================================================================
 
 exports.sendToArduino = (message) => {
-  if (!serialPort || !serialPort.isOpen) {
+  // `writable` is false while the stream is closing/destroyed — writing then
+  // is what produced "GetOverlappedResult: Operation aborted".
+  if (!serialPort || !serialPort.isOpen || serialPort.writable === false || serialPort.destroyed) {
     console.warn('[RFID] Serial port not available');
     return false;
   }
