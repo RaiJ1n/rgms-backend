@@ -253,6 +253,16 @@ exports.listPorts = async () => {
 exports.initRFID = async () => {
   console.log('[RFID] Initializing RFID service...');
 
+  // On the VPS there is no Arduino — the reader is plugged into the gym PC and
+  // reaches the API through scripts/rfidBridge.js. Without this switch the
+  // server latches onto its own motherboard port (/dev/ttyS0) from a saved
+  // setting and "sends" MODE:BIND into nothing. Set RFID_SERIAL_DISABLED=true
+  // in the VPS .env to skip all local serial handling.
+  if (String(process.env.RFID_SERIAL_DISABLED || '').toLowerCase() === 'true') {
+    console.log('[RFID] Local serial disabled (RFID_SERIAL_DISABLED=true) — expecting rfidBridge.js');
+    return;
+  }
+
   try {
     const ports = await SerialPort.list();
     const config = await getConfig();
