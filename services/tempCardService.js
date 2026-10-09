@@ -336,7 +336,28 @@ async function returnCard({ id, uid, adminId }, now = new Date()) {
   if (!card || card.cardType !== 'TEMPORARY') throw httpError('Temporary card not found', 404);
 
   if (card.memberAssignmentId) {
-    return endAssignment(card.memberAssignmentId, { status: 'RETURNED', adminId }, now);
+    const loan = await TempCardAssignment.findById(card.memberAssignmentId);
+    if (!loan || !HOLDING.includes(loan.status)) {
+      // The loan is already closed (double submit, stale screen, or a lost card
+      // write). The card is free, so heal the pointer and report it - this is a
+      // harmless no-op, not a conflict.
+      await releaseCard(card._id, card.memberAssignmentId);
+      return { alreadyAvailable: true, cardRef: card.cardId };
+    }
+    try {
+      return await endAssignment(card.memberAssignmentId, { status: 'RETURNED', adminId }, now);
+    } catch (err) {
+      // Lost a race with another return of the same card: if it is now closed
+      // as RETURNED, the outcome is exactly what the caller wanted.
+      if (err && err.errorType === 'not_active') {
+        const latest = await TempCardAssignment.findById(card.memberAssignmentId);
+        if (!latest || !HOLDING.includes(latest.status)) {
+          await releaseCard(card._id, card.memberAssignmentId);
+          return { alreadyAvailable: true, cardRef: card.cardId };
+        }
+      }
+      throw err;
+    }
   }
 
   await visitorPassService.reconcilePass(card);

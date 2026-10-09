@@ -10,21 +10,23 @@ const RFIDCard = require('../models/RFIDCard');
 const User = require('../models/User');
 const Coach = require('../models/Coach');
 const AuditLog = require('../models/AuditLog');
+const TempCardAssignment = require('../models/TempCardAssignment');
 const ctrl = require('../controllers/rfidController');
 
 const UID = '419A4E16';
 const M1 = 'a'.repeat(24), M2 = 'b'.repeat(24), GONE = 'c'.repeat(24);
 let cards, users, audits, failNextSave;
+let loans = {};
 
 function mkCard(o) {
-  const c = { _id: 'card' + cards.length, cardId: o.cardId, userId: o.userId, coachId: o.coachId, cardType: o.cardType, active: true };
+  const c = { _id: 'card' + cards.length, active: true, ...o };
   c.save = async () => { if (!cards.includes(c)) cards.push(c); return c; };
   c.deleteOne = async () => {};
   return c;
 }
 const origNew = Object.getOwnPropertyDescriptor(RFIDCard.prototype, 'save');
 function setup(seed = []) {
-  cards = []; users = new Set([M1, M2]); audits = []; failNextSave = null;
+  cards = []; users = new Set([M1, M2]); audits = []; failNextSave = null; loans = {};
   seed.forEach((s) => cards.push(mkCard(s)));
   RFIDCard.findOne = (q) => {
     const wanted = q.cardId || (q.$or && q.$or.find((x) => x.cardId)?.cardId);
@@ -40,6 +42,7 @@ function setup(seed = []) {
   User.findById = async (id) => (users.has(String(id)) ? { fullname: 'Test Member' } : null);
   Coach.findById = async () => null;
   AuditLog.create = async (d) => { audits.push(d); return d; };
+  TempCardAssignment.findById = async (id) => loans[String(id)] || null;
 }
 const call = async (body, user = { _id: 'admin1' }) => {
   const out = { status: 200, body: null, err: null };
@@ -88,11 +91,71 @@ test('card with no owner at all is reclaimable', async () => {
   assert.equal((await call({ userId: M1, cardId: UID })).status, 201);
 });
 
-test('visitor/temporary card is not bound as a member card', async () => {
-  setup([{ cardId: UID, cardType: 'TEMPORARY' }]);
-  const r = await call({ userId: M1, cardId: UID });
+const FUTURE = new Date(Date.now() + 6 * 3600e3), PAST = new Date(Date.now() - 6 * 3600e3);
+
+test('temporary card still IN USE is not bound: lent to a member, or visitor pass still valid', async () => {
+  setup([{ cardId: UID, cardType: 'TEMPORARY', memberAssignmentId: 'loan1' }]);
+  loans.loan1 = { status: 'ACTIVE' };
+  let r = await call({ userId: M1, cardId: UID });
   assert.equal(r.status, 409);
-  assert.match(r.body.message, /visitor|temporary/i);
+  assert.match(r.body.message, /currently in use/i);
+  setup([{ cardId: UID, cardType: 'TEMPORARY', visitorName: 'Guest', validFrom: PAST, validUntil: FUTURE }]);
+  r = await call({ userId: M1, cardId: UID });
+  assert.equal(r.status, 409);
+  assert.equal(cards[0].cardType, 'TEMPORARY');
+});
+
+test('Coach model is an empty stub (as in production): binding still works, no 500', async () => {
+  setup([{ cardId: UID, cardType: 'MEMBER', userId: M2 }]);
+  const saved = Coach.exists;
+  delete Coach.exists; // models/Coach.js is `module.exports = {}`
+  try {
+    const other = await call({ userId: M1, cardId: UID });
+    assert.equal(other.status, 409, 'real owner still blocks');
+    assert.equal(other.err, null);
+    setup([{ cardId: UID, cardType: 'MEMBER', userId: GONE }]);
+    delete Coach.exists;
+    const orphan = await call({ userId: M1, cardId: UID });
+    assert.equal(orphan.status, 201, 'orphan is reclaimed');
+  } finally {
+    Coach.exists = saved;
+  }
+});
+
+test('STALE loan pointer (loan already RETURNED) does not block binding; card converts', async () => {
+  setup([{ cardId: UID, cardType: 'TEMPORARY', memberAssignmentId: 'loan1' }]);
+  loans.loan1 = { status: 'RETURNED' };
+  const r = await call({ userId: M1, cardId: UID });
+  assert.equal(r.status, 201);
+  assert.equal(cards[0].cardType, 'MEMBER');
+  assert.equal(cards[0].memberAssignmentId, undefined);
+});
+
+test('RETURNED temporary card (spare, nobody holds it) converts to a member card', async () => {
+  setup([{ cardId: UID, cardType: 'TEMPORARY' }]); // what releaseCard leaves behind
+  const r = await call({ userId: M1, cardId: UID });
+  assert.equal(r.status, 201);
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].cardType, 'MEMBER');
+  assert.equal(String(cards[0].userId), M1);
+  assert.equal(audits[0].meta.convertedFromTemporaryCard, true);
+});
+
+test('checked-out / expired / revoked visitor pass converts and loses every visitor field', async () => {
+  const base = { cardId: UID, cardType: 'TEMPORARY', visitorName: 'Guest', validFrom: PAST, memberAssignmentId: undefined };
+  for (const extra of [
+    { validUntil: FUTURE, checkedInAt: PAST, checkedOutAt: new Date() },
+    { validUntil: PAST },
+    { validUntil: FUTURE, active: false },
+  ]) {
+    setup([{ ...base, ...extra }]);
+    const r = await call({ userId: M1, cardId: UID });
+    assert.equal(r.status, 201, JSON.stringify(extra));
+    const c = cards[0];
+    assert.equal(c.cardType, 'MEMBER');
+    assert.equal(c.active, true);
+    for (const f of ['visitorName', 'validFrom', 'validUntil', 'checkedInAt', 'checkedOutAt', 'memberAssignmentId']) assert.equal(c[f], undefined, f);
+  }
 });
 
 test('race with bridge auto-bind (E11000) for the SAME member converges to success', async () => {

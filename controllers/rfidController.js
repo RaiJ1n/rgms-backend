@@ -69,7 +69,7 @@ exports.registerCard = async (req, res, next) => {
           lcd: { line1: 'RFID BOUND', line2: existing.cardId.slice(0, 16) },
         });
       }
-      if (kind !== rfidBinding.KIND.ORPHAN) {
+      if (!rfidBinding.isReclaimable(kind)) {
         return res.status(409).json({ success: false, message: rfidBinding.MESSAGES[kind] });
       }
       reclaimable = existing;
@@ -216,7 +216,7 @@ async function autoBindCaptured(cardId, session) {
       socketUtil.emitToAdmins('rfid:bound', { cardId: existing.cardId, ownerId, ownerType, at: new Date() });
       return { status: 200, bound: true, message: 'Card already bound to this account', lcd: { line1: 'RFID BOUND', line2: existing.cardId.slice(0, 16) } };
     }
-    if (kind !== rfidBinding.KIND.ORPHAN) {
+    if (!rfidBinding.isReclaimable(kind)) {
       socketUtil.emitToAdmins('rfid:error', {
         title: 'RFID Already Registered',
         message: rfidBinding.MESSAGES[kind],

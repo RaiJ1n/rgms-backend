@@ -525,7 +525,7 @@ async function handleRFIDData(line) {
           socketUtil.emitToAdmins('rfid:bound', { cardId: existing.cardId, ownerId, ownerType, at: new Date() });
           return;
         }
-        if (kind !== rfidBinding.KIND.ORPHAN) {
+        if (!rfidBinding.isReclaimable(kind)) {
           console.log(`[RFID] Binding rejected — ${uid} already assigned (${kind})`);
           exports.sendToArduino('ALREADY|REGISTERED');
           socketUtil.emitToAdmins('rfid:error', {

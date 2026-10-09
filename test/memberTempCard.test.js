@@ -357,6 +357,25 @@ test('return: assignment ended, card AVAILABLE, returned tap denied, original ca
   assert.ok(issued.body.data._id);
 });
 
+test('return: a card whose loan is already closed returns 200 alreadyAvailable (no 409) and heals the stale pointer', async () => {
+  const issued = await issue(M1._id, UID_SPARE);
+  assert.equal(issued.code, 201);
+  const card = cardOf(UID_SPARE);
+  // simulate drift: assignment closed but the card still points at it
+  const loan = assignments.find((a) => same(a._id, card.memberAssignmentId));
+  loan.status = 'RETURNED';
+  loan.holdsCard = false;
+
+  const r = await call(tempCtl.returnCard, { body: { uid: UID_SPARE } });
+  assert.equal(r.code || 200, 200);
+  assert.equal(r.body.success, true);
+  assert.equal(r.body.data.alreadyAvailable, true);
+  assert.ok(!cardOf(UID_SPARE).memberAssignmentId, 'stale pointer must be cleared');
+
+  // and the card is immediately reusable
+  assert.equal((await issue(M2._id, UID_SPARE)).code, 201);
+});
+
 test('reuse: a returned card can be lent to another member or issued as a visitor pass; visits stay separate', async () => {
   await issue(M1._id, UID_SPARE);
   await tap(UID_SPARE);
