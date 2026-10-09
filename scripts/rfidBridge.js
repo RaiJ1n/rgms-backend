@@ -19,7 +19,7 @@
 //   4. Reports the REAL failure on the LCD instead of one generic message:
 //        network down / timeout / DNS / TLS -> SERVER ERROR | NO RESPONSE
 //        HTTP 5xx                            -> SERVER ERROR | HTTP <code>
-//        HTTP 401/403 (bad device key)       -> DEVICE KEY   | REJECTED
+//        HTTP 401 (bad device key)           -> DEVICE KEY   | REJECTED  (403 = card/subscription denial, shown with its own LCD text)
 //        Not a valid UID                     -> READ ERROR   | TRY AGAIN
 //      and always prints the exact cause in this console.
 //
@@ -268,8 +268,11 @@ async function handleSerialLine(rawLine) {
     const body = r.json || {};
     log(`HTTP ${r.status} bindingMode=${body.bindingMode === true} bound=${body.bound === true} msg=${JSON.stringify(body.message || '')}`);
 
-    if (r.status === 401 || r.status === 403) {
-      warn('Server REJECTED the device key. RFID_DEVICE_KEY here != RFID_DEVICE_KEY in the VPS .env.');
+    // Only 401 means the device key failed (requireDeviceKey). 403 is a normal
+    // business denial from the scan flow (deactivated card, expired/no
+    // subscription, completed day...) and carries its own LCD text below.
+    if (r.status === 401) {
+      warn(`Server REJECTED the device key (${body.errorCode || 'no errorCode'}). RFID_DEVICE_KEY here != RFID_DEVICE_KEY in the VPS .env.`);
       await writeLine('DEVICE KEY|REJECTED');
       return;
     }

@@ -8,6 +8,7 @@ const socketUtil = require('../utils/socket');
 const rfidService = require('../services/rfidService');
 const { normalizeUid, isValidUid } = require('../utils/normalizeUid');
 const cardLookup = require('../services/rfidCardLookup');
+const rfidBinding = require('../services/rfidBinding');
 const { identityFor, logUid } = require('../utils/uidHash');
 const visitorPassService = require('../services/visitorPassService');
 
@@ -52,18 +53,26 @@ exports.registerCard = async (req, res, next) => {
     }
 
     // Check if card already registered (normalized, so "A1 B2 C3 D4"
-    // can never silently duplicate "A1B2C3D4")
+    // can never silently duplicate "A1B2C3D4"). An existing document only
+    // blocks the bind when it is a REAL assignment - see services/rfidBinding.js.
     const existing = await cardLookup.findByUid(cardId);
+    let reclaimable = null;
     if (existing) {
-      const sameOwner =
-        (userId && existing.userId && existing.userId.toString() === userId) ||
-        (coachId && existing.coachId && existing.coachId.toString() === coachId);
-      return res.status(400).json({
-        success: false,
-        message: sameOwner
-          ? 'This RFID card is already assigned to this account.'
-          : 'This RFID card is already assigned to another account.',
-      });
+      const kind = await rfidBinding.classifyExisting(existing, { userId, coachId });
+      if (kind === rfidBinding.KIND.SAME) {
+        // Idempotent: the bridge auto-bind may have created it a moment ago.
+        return res.status(200).json({
+          success: true,
+          alreadyBound: true,
+          message: rfidBinding.MESSAGES.same,
+          data: existing,
+          lcd: { line1: 'RFID BOUND', line2: existing.cardId.slice(0, 16) },
+        });
+      }
+      if (kind !== rfidBinding.KIND.ORPHAN) {
+        return res.status(409).json({ success: false, message: rfidBinding.MESSAGES[kind] });
+      }
+      reclaimable = existing;
     }
 
     // Verify the owner exists in the right collection
@@ -78,23 +87,51 @@ exports.registerCard = async (req, res, next) => {
       ownerName = coach.fullname;
     }
 
-    // Create RFID card document
-    const card = new RFIDCard({
-      ...identityFor(cardId), // opaque reference + keyed hash when RFID_HASH_SECRET is set
-      userId: userId || undefined,
-      coachId: coachId || undefined,
-      active: true,
-      assignedAt: new Date(),
-    });
+    // Create RFID card document (or re-point an orphan left by a deleted owner)
+    let card;
+    if (reclaimable) {
+      card = await rfidBinding.reclaimOrphan(reclaimable, { userId, coachId, adminId: req.user._id, via: 'register' });
+    } else {
+      card = new RFIDCard({
+        ...identityFor(cardId), // opaque reference + keyed hash when RFID_HASH_SECRET is set
+        userId: userId || undefined,
+        coachId: coachId || undefined,
+        active: true,
+        assignedAt: new Date(),
+      });
+      try {
+        await card.save();
+      } catch (saveErr) {
+        // Lost a race with the bridge/serial auto-bind for the same tap: the
+        // unique index fired. Re-read and answer from what is really stored.
+        if (saveErr && saveErr.code === 11000) {
+          const raced = await cardLookup.findByUid(cardId);
+          if (raced) {
+            const kind = await rfidBinding.classifyExisting(raced, { userId, coachId });
+            if (kind === rfidBinding.KIND.SAME) {
+              return res.status(200).json({
+                success: true,
+                alreadyBound: true,
+                message: rfidBinding.MESSAGES.same,
+                data: raced,
+                lcd: { line1: 'RFID BOUND', line2: raced.cardId.slice(0, 16) },
+              });
+            }
+            return res.status(409).json({ success: false, message: rfidBinding.MESSAGES[kind] || rfidBinding.MESSAGES.other });
+          }
+        }
+        throw saveErr;
+      }
+    }
 
-    await card.save();
-
-    // Audit log
-    await AuditLog.create({
-      action: 'rfid_register',
-      userId: req.user._id, // Admin who registered
-      meta: { cardId: card.cardId, ownerId: userId || coachId, ownerType: userId ? 'member' : 'employee' },
-    });
+    // Audit log (reclaimOrphan already wrote its own, richer entry)
+    if (!reclaimable) {
+      await AuditLog.create({
+        action: 'rfid_register',
+        userId: req.user._id, // Admin who registered
+        meta: { cardId: card.cardId, ownerId: userId || coachId, ownerType: userId ? 'member' : 'employee' },
+      });
+    }
 
     // Notify member (if Socket.IO connected) — employees don't have a
     // member-side session to notify, so this only fires for userId.
@@ -171,22 +208,24 @@ async function autoBindCaptured(cardId, session) {
   const ownerType = session.userId ? 'member' : 'employee';
 
   const existing = await cardLookup.findByUid(cardId);
+  let reclaimable = null;
   if (existing) {
-    const sameOwner =
-      (session.userId && existing.userId && existing.userId.toString() === String(session.userId)) ||
-      (session.coachId && existing.coachId && existing.coachId.toString() === String(session.coachId));
-    if (sameOwner) {
+    const kind = await rfidBinding.classifyExisting(existing, { userId: session.userId, coachId: session.coachId });
+    if (kind === rfidBinding.KIND.SAME) {
       rfidService.noteBound(existing.cardId, ownerId);
       socketUtil.emitToAdmins('rfid:bound', { cardId: existing.cardId, ownerId, ownerType, at: new Date() });
       return { status: 200, bound: true, message: 'Card already bound to this account', lcd: { line1: 'RFID BOUND', line2: existing.cardId.slice(0, 16) } };
     }
-    socketUtil.emitToAdmins('rfid:error', {
-      title: 'RFID Already Registered',
-      message: 'This RFID card is already assigned to another account.',
-      timestamp: new Date(),
-      uid: logUid(cardId),
-    });
-    return { status: 409, bound: false, message: 'RFID already registered', lcd: { line1: 'ALREADY', line2: 'REGISTERED' } };
+    if (kind !== rfidBinding.KIND.ORPHAN) {
+      socketUtil.emitToAdmins('rfid:error', {
+        title: 'RFID Already Registered',
+        message: rfidBinding.MESSAGES[kind],
+        timestamp: new Date(),
+        uid: logUid(cardId),
+      });
+      return { status: 409, bound: false, message: 'RFID already registered', lcd: { line1: 'ALREADY', line2: 'REGISTERED' } };
+    }
+    reclaimable = existing;
   }
 
   let ownerName;
@@ -200,18 +239,38 @@ async function autoBindCaptured(cardId, session) {
     ownerName = coach.fullname;
   }
 
-  const created = await RFIDCard.create({
-    ...identityFor(cardId),
-    userId: session.userId || undefined,
-    coachId: session.coachId || undefined,
-    active: true,
-    assignedAt: new Date(),
-  });
-  await AuditLog.create({
-    action: 'rfid_register',
-    userId: session.startedBy || undefined,
-    meta: { cardId: created.cardId, ownerId, ownerType, via: 'bridge-auto-bind' },
-  }).catch(() => {});
+  let created;
+  if (reclaimable) {
+    created = await rfidBinding.reclaimOrphan(reclaimable, {
+      userId: session.userId, coachId: session.coachId, adminId: session.startedBy, via: 'bridge-auto-bind',
+    });
+  } else {
+    try {
+      created = await RFIDCard.create({
+        ...identityFor(cardId),
+        userId: session.userId || undefined,
+        coachId: session.coachId || undefined,
+        active: true,
+        assignedAt: new Date(),
+      });
+    } catch (e) {
+      // The browser's POST /register won the race for the same tap.
+      if (e && e.code === 11000) {
+        const raced = await cardLookup.findByUid(cardId);
+        if (raced && (await rfidBinding.classifyExisting(raced, { userId: session.userId, coachId: session.coachId })) === rfidBinding.KIND.SAME) {
+          rfidService.noteBound(raced.cardId, ownerId);
+          return { status: 200, bound: true, message: 'Card already bound to this account', lcd: { line1: 'RFID BOUND', line2: raced.cardId.slice(0, 16) } };
+        }
+        return { status: 409, bound: false, message: 'RFID already registered', lcd: { line1: 'ALREADY', line2: 'REGISTERED' } };
+      }
+      throw e;
+    }
+    await AuditLog.create({
+      action: 'rfid_register',
+      userId: session.startedBy || undefined,
+      meta: { cardId: created.cardId, ownerId, ownerType, via: 'bridge-auto-bind' },
+    }).catch(() => {});
+  }
   if (session.userId) socketUtil.emitToUser(session.userId, 'rfid:updated', { bound: true, cardId: created.cardId, active: true });
   socketUtil.emitToAdmins('rfid:bound', { cardId: created.cardId, ownerId, ownerType, at: new Date() });
   rfidService.noteBound(created.cardId, ownerId);
