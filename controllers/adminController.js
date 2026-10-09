@@ -826,14 +826,25 @@ const createManualAttendance = async (req, res, next) => {
         return res.status(409).json({ success: false, message: `${user.fullname} already completed attendance today` });
       }
 
-      const attendance = await Attendance.create({
-        userId: user._id,
-        subjectType: 'member',
-        attendanceType: 'MEMBER',
-        memberType: memberType === 'Student' ? 'Student' : 'Regular',
-        checkIn: new Date(),
-        notes: notes || 'Manually recorded by admin',
-      });
+      let attendance;
+      try {
+        const nowIn = new Date();
+        attendance = await Attendance.create({
+          userId: user._id,
+          subjectType: 'member',
+          attendanceType: 'MEMBER',
+          dayKey: formatLocalDateLabel(nowIn),
+          memberType: memberType === 'Student' ? 'Student' : 'Regular',
+          checkIn: nowIn,
+          notes: notes || 'Manually recorded by admin',
+        });
+      } catch (err) {
+        // Unique (userId, dayKey): a concurrent RFID tap just recorded today.
+        if (err && err.code === 11000) {
+          return res.status(409).json({ success: false, message: `${user.fullname} is already checked in` });
+        }
+        throw err;
+      }
       await attendance.populate('userId', 'fullname email phone');
 
       // Session deduction (Group 3): a genuine new check-in on a real member
