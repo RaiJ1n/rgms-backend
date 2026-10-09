@@ -29,6 +29,12 @@ const attendanceSchema = new mongoose.Schema({
   // because the analytics "Non-member" bucket is built on it. Old documents
   // have no attendanceType; readers use resolveAttendanceType() as fallback.
   attendanceType: { type: String, enum: ['MEMBER', 'VISITOR', 'EMPLOYEE', 'GUEST'] },
+  // Manila-local 'YYYY-MM-DD' of the check-in. Written for MEMBER rows only and
+  // backed by a partial unique index (below) so two concurrent taps - on the
+  // same card or on a member's original + temporary card - cannot create two
+  // attendance rows (and two session deductions) for one member on one day.
+  // Rows written before this field existed simply have no dayKey.
+  dayKey: { type: String },
 
   rfidCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'RFIDCard' },
   memberType: { type: String, enum: ['Regular', 'Student'], default: 'Regular' },
@@ -49,5 +55,9 @@ attendanceSchema.statics.resolveType = function (doc, card) {
 };
 
 attendanceSchema.index({ rfidCardId: 1, createdAt: -1 });
+attendanceSchema.index(
+  { userId: 1, dayKey: 1 },
+  { unique: true, partialFilterExpression: { attendanceType: 'MEMBER', dayKey: { $type: 'string' } } },
+);
 
 module.exports = mongoose.model('Attendance', attendanceSchema);

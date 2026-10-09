@@ -7,11 +7,13 @@ const AuditLog = require('../models/AuditLog');
 const socketUtil = require('../utils/socket');
 const subscriptionService = require('./subscriptionService');
 const { getScanMessage } = require('../utils/scanMessages');
-const { startOfLocalDay } = require('../utils/localDate');
+const { startOfLocalDay, formatLocalDateLabel } = require('../utils/localDate');
 const cardLookup = require('./rfidCardLookup');
 const { logUid } = require('../utils/uidHash');
 const { normalizeUid } = require('../utils/normalizeUid');
 const visitorPassService = require('./visitorPassService');
+const TempCardAssignment = require('../models/TempCardAssignment');
+const User = require('../models/User');
 
 const httpError = (message, statusCode, errorType) => {
   const err = new Error(message);
@@ -88,6 +90,15 @@ async function processScan(cardId) {
   // BEFORE the userId/coachId branches below — a TEMPORARY card has neither,
   // and must never fall through to the "not linked" case or to member logic.
   if (card.cardType === 'TEMPORARY') {
+    // Lent to an existing member: resolve to that member and use the normal
+    // member rules. The tap is an alternative credential, not a new identity.
+    if (card.memberAssignmentId) return processMemberLoanScan(card, now);
+    // A spare card nobody currently holds (never issued, or returned) must
+    // grant nothing - and say so, rather than look like a visitor problem.
+    if (visitorPassService.isUnassigned(card)) {
+      emitScanError('temp_card_not_assigned', { uid: card.cardId });
+      throw httpError('Temporary card is not assigned', 403, 'temp_card_not_assigned');
+    }
     return processVisitorScan(card, now);
   }
 
@@ -138,8 +149,14 @@ async function processEmployeeScan(card, now) {
 
   let action = 'checkin';
   if (attendance) {
-    attendance.checkOut = now;
-    await attendance.save();
+    // Atomic: only the tap that finds the row still open closes it.
+    const closed = await Attendance.findOneAndUpdate(
+      { _id: attendance._id, checkOut: { $exists: false } },
+      { $set: { checkOut: now } },
+      { new: true },
+    );
+    if (!closed) throw httpError('Duplicate scan prevented', 429, 'duplicate_scan');
+    attendance = closed;
     action = 'checkout';
   } else {
     // One-Tap-Per-Day: an employee who already completed a full check-in/
@@ -387,60 +404,88 @@ async function manualVisitorAttendance({ passId, action, adminId }) {
   return visitorCheckIn(card, now, { manual: true, adminId });
 }
 
-async function processMemberScan(card, now) {
-  const user = card.userId;
-
-  // Section A fix: the member's own account status was never checked
-  // before — only RFIDCard.active was. A deactivated member with a
-  // still-active card and a still-valid subscription record could
-  // previously check in.
+// The member-eligibility rules, shared by the RFID tap (below) and by
+// temporary-card issuance (services/tempCardService.js) so the two can never
+// drift apart. Pure check: it emits nothing and throws nothing. A temporary
+// card never makes an ineligible member eligible.
+//
+// Date is checked BEFORE the status field on purpose: `status` can be set to
+// 'expired' explicitly (e.g. by a background job) as well as implied by
+// endDate having passed while status still reads 'active'. The two cases need
+// to stay distinguishable for the LCD/frontend messaging (utils/scanMessages.js).
+async function checkMemberEligibility(user, now = new Date()) {
   if (!user.isActive) {
-    emitScanError('member_inactive', {
-      uid: card.cardId,
-      userId: user._id,
-      fullname: user.fullname,
-    });
-    throw httpError('This member account has been deactivated', 403, 'member_inactive');
+    return { ok: false, errorType: 'member_inactive', status: 403, message: 'This member account has been deactivated' };
   }
-
-  // Section A fix: previously one query (`status: 'active', endDate:
-  // {$gte: now}`) collapsed three different situations into the same
-  // generic "No active membership" message. Fetching the member's most
-  // recent subscription (no filter) and branching lets each case say
-  // something the front desk can actually act on.
   const subscription = await Subscription.findOne({ userId: user._id }).sort({ endDate: -1 });
-
   if (!subscription) {
-    emitScanError('no_subscription', { uid: card.cardId, userId: user._id, fullname: user.fullname });
-    throw httpError('No subscription on file', 403, 'no_subscription');
+    return { ok: false, errorType: 'no_subscription', status: 403, message: 'No subscription on file' };
   }
-
-  // Date is checked BEFORE the status field on purpose: `status` can be
-  // set to 'expired' explicitly (e.g. by a background job) as well as
-  // implied by endDate having passed while status still reads 'active'
-  // (e.g. the job hasn't run yet). Checking status first would have
-  // classified the first case as generic "inactive" rather than
-  // "expired", even though the subscription document literally says
-  // expired — the two scenarios need to stay distinguishable for the
-  // LCD/frontend messaging (see utils/scanMessages.js), so the
-  // authoritative signal (the date) is checked first.
   if (subscription.endDate < now) {
-    emitScanError('subscription_expired', {
+    return {
+      ok: false, errorType: 'subscription_expired', status: 403, message: 'Subscription expired',
+      extra: { expiredOn: subscription.endDate },
+    };
+  }
+  if (subscription.status !== 'active') {
+    return { ok: false, errorType: 'subscription_inactive', status: 403, message: 'Membership is inactive' };
+  }
+  return { ok: true, subscription };
+}
+
+// A tap on a spare card that is lent to a member. Resolves the active
+// assignment to the member, enforces assignment validity/expiry, then hands
+// over to processMemberScan - the one place that applies subscription and
+// attendance rules and deducts a session.
+async function processMemberLoanScan(card, now) {
+  const deny = (errorType, message) => {
+    emitScanError(errorType, { uid: card.cardId });
+    return httpError(message, 403, errorType);
+  };
+  const assignment = await TempCardAssignment.findById(card.memberAssignmentId);
+  if (!assignment) throw deny('temp_card_not_assigned', 'Temporary card is not assigned');
+
+  // Expiry is enforced here, on the server, on every tap.
+  if (assignment.status === 'ACTIVE' && assignment.expiresAt <= now) {
+    await TempCardAssignment.updateOne({ _id: assignment._id, status: 'ACTIVE' }, { $set: { status: 'EXPIRED' } });
+    throw deny('temp_card_expired', 'Temporary card has expired');
+  }
+  if (assignment.status === 'EXPIRED') throw deny('temp_card_expired', 'Temporary card has expired');
+  if (assignment.status !== 'ACTIVE') throw deny('temp_card_not_assigned', 'Temporary card is not assigned');
+
+  const user = await User.findById(assignment.memberId);
+  if (!user) throw deny('temp_card_not_assigned', 'Temporary card is not assigned');
+
+  return processMemberScan(card, now, { user, assignment });
+}
+
+// `via` is only set when the tap came from a temporary card:
+// { user, assignment } - the member the assignment resolves to.
+async function processMemberScan(card, now, via = null) {
+  const user = via ? via.user : card.userId;
+
+  // Same rules as always (see checkMemberEligibility), now emitting the same
+  // scan errors the front desk already sees.
+  const eligibility = await checkMemberEligibility(user, now);
+  if (!eligibility.ok) {
+    emitScanError(eligibility.errorType, {
       uid: card.cardId,
       userId: user._id,
       fullname: user.fullname,
-      expiredOn: subscription.endDate,
+      ...(eligibility.extra || {}),
     });
-    throw httpError('Subscription expired', 403, 'subscription_expired');
+    throw httpError(eligibility.message, eligibility.status, eligibility.errorType);
   }
 
-  if (subscription.status !== 'active') {
-    emitScanError('subscription_inactive', { uid: card.cardId, userId: user._id, fullname: user.fullname });
-    throw httpError('Membership is inactive', 403, 'subscription_inactive');
-  }
-
+  // Atomic cooldown claim (was: read lastScannedAt, then save). Two taps on
+  // one card inside the same instant can no longer both get past this point.
+  const cutoff = new Date(now.getTime() - 10 * 1000);
+  const claimed = await RFIDCard.findOneAndUpdate(
+    { _id: card._id, $or: [{ lastScannedAt: null }, { lastScannedAt: { $lt: cutoff } }] },
+    { $set: { lastScannedAt: now } },
+  );
+  if (!claimed) throw httpError('Duplicate scan prevented (wait 10 seconds)', 429, 'duplicate_scan');
   card.lastScannedAt = now;
-  await card.save();
 
   // Today's open session, from the DB — never from in-memory state
   const startOfDay = startOfLocalDay(now);
@@ -477,16 +522,27 @@ async function processMemberScan(card, now) {
       throw httpError('Attendance already completed for today', 403, 'daily_attendance_completed');
     }
 
-    attendance = await Attendance.create({
-      userId: user._id,
-      subjectType: 'member',
-      attendanceType: 'MEMBER',
-      rfidCardId: card._id,
-      checkIn: now,
-      // No admin present at a card scan to pick Regular/Student manually,
-      // so fall back to the account's existing promo flag.
-      memberType: user.studentPromoActive ? 'Student' : 'Regular',
-    });
+    try {
+      attendance = await Attendance.create({
+        userId: user._id,
+        subjectType: 'member',
+        attendanceType: 'MEMBER',
+        dayKey: formatLocalDateLabel(now),
+        rfidCardId: card._id,
+        checkIn: now,
+        // No admin present at a card scan to pick Regular/Student manually,
+        // so fall back to the account's existing promo flag.
+        memberType: user.studentPromoActive ? 'Student' : 'Regular',
+      });
+    } catch (err) {
+      // Unique (userId, dayKey) index: a concurrent tap - on this card or the
+      // member's other card - already created today's row. The loser records
+      // nothing and deducts nothing.
+      if (err && err.code === 11000) {
+        throw httpError('Attendance was just recorded for this member', 429, 'duplicate_scan');
+      }
+      throw err;
+    }
 
     // Session deduction (Group 3): only on a genuine new check-in, never
     // on the checkout branch above — one RFID-granted visit deducts
@@ -498,12 +554,17 @@ async function processMemberScan(card, now) {
   await AuditLog.create({
     action: `rfid_${action}`,
     userId: user._id,
-    meta: { cardId: card.cardId, subjectType: 'member' },
+    meta: {
+      cardId: card.cardId,
+      subjectType: 'member',
+      ...(via ? { viaTempCard: true, assignmentId: via.assignment._id } : {}),
+    },
   });
 
   const attendanceEvent = {
     type: action,
     subjectType: 'member',
+    ...(via ? { viaTempCard: true } : {}),
     at: now,
     attendance: {
       _id: attendance._id,
@@ -523,4 +584,4 @@ async function processMemberScan(card, now) {
   return { action, attendance, event: attendanceEvent, user };
 }
 
-module.exports = { processScan, manualVisitorAttendance };
+module.exports = { processScan, manualVisitorAttendance, checkMemberEligibility };

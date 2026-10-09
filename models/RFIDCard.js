@@ -53,6 +53,11 @@ const rfidCardSchema = new mongoose.Schema({
   active: { type: Boolean, default: true },
   lastScannedAt: { type: Date },
   assignedAt: { type: Date },
+  // Set only while this spare card is lent to an existing MEMBER as a
+  // temporary replacement for a forgotten card (see TempCardAssignment).
+  // While set, the card is unavailable for visitor passes and a tap resolves
+  // to that member. Cleared when the loan is returned or revoked.
+  memberAssignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'TempCardAssignment' },
 }, { timestamps: true });
 
 // The keyed hash is an internal lookup key: never serialize it into an API

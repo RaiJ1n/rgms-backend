@@ -20,8 +20,17 @@ const Attendance = require('../models/Attendance');
 // Precedence (highest first): REVOKED > CHECKED_OUT > EXPIRED > UPCOMING >
 // ACTIVE (inside) / PENDING (valid, not used yet).
 // CHECKED_OUT deliberately outranks "still inside the validity window".
+// A spare card that has never been issued, or was returned by a member, has no
+// visitor identity and no validity window. It grants nothing until issued.
+function isUnassigned(card) {
+  return !card.memberAssignmentId && !card.visitorName && !card.validFrom && !card.validUntil;
+}
+
 function passStatus(card, now = new Date()) {
+  // Lent to a member (see TempCardAssignment) - not a visitor pass at all.
+  if (card.memberAssignmentId) return 'MEMBER_LOAN';
   if (!card.active) return 'REVOKED';
+  if (isUnassigned(card)) return 'UNASSIGNED';
   if (card.checkedOutAt) return 'CHECKED_OUT';
   if (card.validUntil && now > card.validUntil) return 'EXPIRED';
   if (card.validFrom && now < card.validFrom) return 'UPCOMING';
@@ -32,7 +41,7 @@ function passStatus(card, now = new Date()) {
 // revoked, or its day has passed. It can NOT be re-issued while it is
 // PENDING / UPCOMING / ACTIVE — a pass validity date ending is not what
 // releases a card that is still live; a checkout is.
-const RELEASED_STATUSES = ['CHECKED_OUT', 'EXPIRED', 'REVOKED'];
+const RELEASED_STATUSES = ['CHECKED_OUT', 'EXPIRED', 'REVOKED', 'UNASSIGNED'];
 function isCardAvailable(card, now = new Date()) {
   return RELEASED_STATUSES.includes(passStatus(card, now));
 }
@@ -42,10 +51,12 @@ function isCardAvailable(card, now = new Date()) {
 function availableFilter(now = new Date()) {
   return {
     cardType: 'TEMPORARY',
+    memberAssignmentId: null, // never while lent to a member
     $or: [
       { active: false },
       { checkedOutAt: { $ne: null } },
       { validUntil: { $lt: now } },
+      { validUntil: null, visitorName: null }, // spare card with no current holder
     ],
   };
 }
@@ -74,6 +85,9 @@ function presentPass(card, now = new Date()) {
 // updated) card document.
 async function reconcilePass(card) {
   if (!card || card.cardType !== 'TEMPORARY' || card.checkedOutAt || !card.active) return card;
+  // Member loans and blank spares have no visitor visit to repair; their old
+  // attendance rows belong to a member and must not be copied onto the card.
+  if (card.memberAssignmentId || isUnassigned(card)) return card;
   const since = card.assignedAt || card.validFrom || new Date(0);
   const latest = await Attendance.findOne({ rfidCardId: card._id, createdAt: { $gte: since } })
     .sort({ createdAt: -1 })
@@ -88,4 +102,4 @@ async function reconcilePass(card) {
   return card;
 }
 
-module.exports = { passStatus, isCardAvailable, availableFilter, presentPass, reconcilePass, RELEASED_STATUSES };
+module.exports = { isUnassigned, passStatus, isCardAvailable, availableFilter, presentPass, reconcilePass, RELEASED_STATUSES };

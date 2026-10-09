@@ -732,6 +732,9 @@ exports.issueTemporaryCard = async (req, res, next) => {
       // Visitor hardware is reused. A card is released for the next visitor
       // when the previous visit is CHECKED OUT (or revoked / past its day) —
       // never while it is still PENDING / UPCOMING / ACTIVE.
+      if (existing.memberAssignmentId) {
+        return res.status(409).json({ success: false, message: 'This card is currently lent to a member as a temporary card. Return it first.' });
+      }
       await reconcilePass(existing); // heal a checkout whose card write was lost
       if (!visitorPassService.isCardAvailable(existing, now)) {
         const st = passStatus(existing, now);
@@ -791,7 +794,10 @@ exports.issueTemporaryCard = async (req, res, next) => {
 exports.listTemporaryCards = async (req, res, next) => {
   try {
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
-    const cards = await RFIDCard.find({ cardType: 'TEMPORARY' }).sort({ validFrom: -1, createdAt: -1 }).limit(limit);
+    // Visitor passes only. Member loans and blank spare cards are listed by
+    // the temporary-card inventory (GET /rfid/temporary/inventory).
+    const cards = await RFIDCard.find({ cardType: 'TEMPORARY', memberAssignmentId: null, visitorName: { $ne: null } })
+      .sort({ validFrom: -1, createdAt: -1 }).limit(limit);
     for (const c of cards) await reconcilePass(c);
     const now = new Date();
     let data = cards.map((c) => presentPass(c, now));
@@ -813,6 +819,9 @@ exports.revokeTemporaryCard = async (req, res, next) => {
     const card = await RFIDCard.findById(req.params.id);
     if (!card || card.cardType !== 'TEMPORARY') {
       return res.status(404).json({ success: false, message: 'Visitor pass not found' });
+    }
+    if (card.memberAssignmentId) {
+      return res.status(409).json({ success: false, message: 'This card is lent to a member. Use the temporary-card return/revoke action instead.' });
     }
     if (!card.active) {
       return res.status(409).json({ success: false, message: 'This visitor pass is already revoked' });

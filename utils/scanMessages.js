@@ -90,6 +90,20 @@ const SCAN_MESSAGES = {
     title: 'Attendance Denied',
     body: 'This employee account has been deactivated. Please contact the gym administrator.',
   },
+  temp_card_expired: {
+    lcdLine1: 'CARD EXPIRED',
+    lcdLine2: 'SEE FRONT DESK',
+    buzzer: 'short_3',
+    title: 'Temporary Card Expired',
+    body: 'This temporary card has expired. Please see the front desk.',
+  },
+  temp_card_not_assigned: {
+    lcdLine1: 'CARD NOT',
+    lcdLine2: 'ASSIGNED',
+    buzzer: 'short_3',
+    title: 'Card Not Assigned',
+    body: 'This temporary card is not assigned to anyone. Please see the front desk.',
+  },
   duplicate_scan: {
     lcdLine1: 'PLEASE WAIT',
     lcdLine2: 'TRY AGAIN',

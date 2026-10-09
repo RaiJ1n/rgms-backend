@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const rfidController = require('../controllers/rfidController');
+const tempCardController = require('../controllers/tempCardController');
 const { protect } = require('../middleware/authMiddleware');
 const { admin } = require('../middleware/adminMiddleware');
 const { requireDeviceKey } = require('../middleware/deviceAuthMiddleware');
@@ -71,6 +72,19 @@ router.post('/registration-mode', rfidController.setRegistrationMode);
 router.post('/temporary', rfidController.issueTemporaryCard);
 router.get('/temporary', rfidController.listTemporaryCards);
 router.patch('/temporary/:id/revoke', rfidController.revokeTemporaryCard);
+
+// Temporary cards for MEMBERS who forgot their own card + spare-card inventory.
+// A spare card resolves to the member's existing account through an assignment.
+// GET   /api/rfid/temporary/members?search=            member picker (eligibility shown)
+// POST  /api/rfid/temporary/member-assignments         Body: { memberId, tempCardUid, originalCardUid? | originalNotPresent: true }
+// POST  /api/rfid/temporary/member-assignments/:id/revoke   Body: { reason }
+// POST  /api/rfid/temporary/return                     Body: { id } | { uid }   (member loan or unused visitor pass)
+// GET   /api/rfid/temporary/inventory?state=
+router.get('/temporary/members', tempCardController.searchMembers);
+router.post('/temporary/member-assignments', tempCardController.issueToMember);
+router.post('/temporary/member-assignments/:id/revoke', tempCardController.revokeAssignment);
+router.post('/temporary/return', tempCardController.returnCard);
+router.get('/temporary/inventory', tempCardController.inventory);
 
 // Get RFID card info for a specific member
 // GET /api/rfid/member/:userId
