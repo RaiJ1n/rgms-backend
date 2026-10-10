@@ -481,7 +481,11 @@ const getMonthlyAttendanceCounts = async (userId, year) => {
 
   const results = await Attendance.aggregate([
     { $match: { userId: new mongoose.Types.ObjectId(userId), checkIn: { $gte: start, $lte: end } } },
-    { $group: { _id: { $month: '$checkIn' }, count: { $sum: 1 } } },
+    // One count per gym DAY (Manila), not per session: several Time-Ins on the
+    // same day are one visit for this chart (same rule as the subscription's
+    // "session" and the streak).
+    { $group: { _id: { m: { $month: { date: '$checkIn', timezone: 'Asia/Manila' } }, d: { $dateToString: { format: '%Y-%m-%d', date: '$checkIn', timezone: 'Asia/Manila' } } } } },
+    { $group: { _id: '$_id.m', count: { $sum: 1 } } },
   ]);
 
   const counts = new Array(12).fill(0);
@@ -551,7 +555,47 @@ const getDashboardSummary = async (req, res, next) => {
   }
 };
 
+// Full attendance history for the signed-in member: EVERY session is its own
+// row (several may share one date), newest first by default. Read-only and
+// scoped to req.user - a member can only ever see their own sessions.
+// GET /users/attendance?page=1&limit=10&sort=desc|asc&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+const getAttendanceHistory = async (req, res, next) => {
+  try {
+    const history = require('../services/attendanceHistoryService');
+    const { parsePagination } = require('../utils/paginate');
+    const { page, limit, skip } = parsePagination({ page: req.query.page, limit: req.query.limit || 10 });
+
+    const filter = { userId: req.user._id };
+    const df = history.dateFilter(req.query.startDate, req.query.endDate);
+    if (!df.ok) return res.status(400).json({ success: false, message: df.message });
+    if (df.range) filter.createdAt = df.range;
+
+    const dir = req.query.sort === 'asc' ? 1 : -1;
+    const [rows, total] = await Promise.all([
+      Attendance.find(filter).sort({ checkIn: dir, _id: dir }).skip(skip).limit(limit).lean(),
+      Attendance.countDocuments(filter),
+    ]);
+    const data = (await history.decorate(rows)).map((a) => ({
+      _id: a._id,
+      checkIn: a.checkIn,
+      checkOut: a.checkOut || null,
+      status: a.status,
+      sessionNo: a.sessionNo,
+      sessionsThatDay: a.sessionsThatDay,
+    }));
+
+    res.json({
+      success: true,
+      data,
+      pagination: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
+  getAttendanceHistory,
   getProfile,
   acknowledgePrivacyNotice,
   updateProfile,

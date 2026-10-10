@@ -13,6 +13,7 @@ const { identityFor, logUid, hashUid } = require('../utils/uidHash');
 const escapeRegex = require('../utils/escapeRegex');
 const visitorPassService = require('../services/visitorPassService');
 const scanDedup = require('../services/scanDedup');
+const history = require('../services/attendanceHistoryService');
 
 exports.registerCard = async (req, res, next) => {
   try {
@@ -437,37 +438,53 @@ function withAttendanceType(doc) {
 
 exports.getLogs = async (req, res, next) => {
   try {
-    const { startDate, endDate, page = 1, limit = 50 } = req.query;
-    
-    // Build filter
+    const { startDate, endDate, search, status } = req.query;
+
+    // Every attendance SESSION is one row - this never groups by member/day.
     const filter = {};
-    if (startDate || endDate) {
-      filter.createdAt = {};
-      if (startDate) filter.createdAt.$gte = new Date(startDate);
-      if (endDate) filter.createdAt.$lte = new Date(endDate);
+    const df = history.dateFilter(startDate, endDate);
+    if (!df.ok) return res.status(400).json({ success: false, message: df.message });
+    if (df.range) filter.createdAt = df.range;
+
+    if (status === 'inside') Object.assign(filter, history.insideFilter());
+    if (status === 'completed') filter.checkOut = { $exists: true };
+
+    // Name search across members, coaches and walk-in / visitor names.
+    const term = typeof search === 'string' ? search.trim().slice(0, 80) : '';
+    if (term) {
+      const rx = new RegExp(escapeRegex(term), 'i');
+      const [users, coaches] = await Promise.all([
+        User.find({ fullname: rx }).select('_id').limit(500).lean(),
+        Coach.find({ fullname: rx }).select('_id').limit(500).lean(),
+      ]);
+      filter.$or = [
+        { userId: { $in: users.map((u) => u._id) } },
+        { coachId: { $in: coaches.map((c) => c._id) } },
+        { guestName: rx },
+      ];
     }
-    
-    // Pagination
-    const pageNum = Math.max(1, parseInt(page, 10));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+
+    // Pagination (default 50 kept for existing callers)
+    const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limitNum = Math.min(2000, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const skip = (pageNum - 1) * limitNum;
-    
-    // Query — populate both possible owner fields; only one will ever be
-    // set per document, so this is one query rather than branching per row.
+    const dir = req.query.sort === 'asc' ? 1 : -1;
+
+    // Populate both possible owner fields; only one is ever set per document.
     const logs = await Attendance.find(filter)
       .populate('userId', 'fullname email phone')
       .populate('coachId', 'fullname email')
       .populate('rfidCardId', 'cardType')
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: dir, _id: dir })
       .skip(skip)
       .limit(limitNum);
-    
-    // Total count
+
     const total = await Attendance.countDocuments(filter);
-    
+    const data = await history.decorate(logs.map(withAttendanceType));
+
     res.json({
       success: true,
-      data: logs.map(withAttendanceType),
+      data,
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -493,11 +510,13 @@ exports.todayAttendance = async (req, res, next) => {
       .populate('rfidCardId', 'cardType')
       .sort({ checkIn: 1 }); // Sort by check-in time
 
+    const data = await history.decorate(logs.map(withAttendanceType));
+
     res.json({
       success: true,
-      data: logs.map(withAttendanceType),
+      data,
       date: formatLocalDateLabel(start),
-      count: logs.length,
+      count: data.length,
     });
   } catch (err) {
     next(err);

@@ -96,6 +96,8 @@ router.put(
 );
 router.get('/subscriptions', userController.getSubscriptions);
 router.get('/dashboard-summary', userController.getDashboardSummary);
+// Every attendance session of the signed-in member (paginated, sortable).
+router.get('/attendance', userController.getAttendanceHistory);
 
 // ---- Assigned workout plans (member side of Sections E4/E5) ----
 // getMyAssignedPlans/getMyAssignedPlanDetail are scoped to

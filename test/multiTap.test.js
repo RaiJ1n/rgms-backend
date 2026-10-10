@@ -399,12 +399,15 @@ test('today\'s admin feed lists BOTH sessions of the day as separate rows', asyn
   await attendanceService.processScan(UID); await liftAndRetap();
   await attendanceService.processScan(UID);
   Attendance.find = () => ({
-    populate() { return this; }, sort() { return this; },
+    populate() { return this; }, sort() { return this; }, select() { return this; }, lean() { return this; },
     then(res, rej) { return Promise.resolve(attendance.slice()).then(res, rej); },
   });
   const r = httpRes();
   await rfidController.todayAttendance({}, r, (e) => { throw e; });
   assert.equal(r.body.count, 2);
+  // Each row is labelled with its own session number for the admin table.
+  assert.deepEqual(r.body.data.map((x) => x.sessionNo).sort(), [1, 2]);
+  assert.ok(r.body.data.every((x) => x.sessionsThatDay === 2));
   assert.equal(new Set(r.body.data.map((x) => String(x._id))).size, 2, 'distinct rows');
   assert.ok(r.body.data.every((x) => x.checkIn && x.checkOut));
 });
