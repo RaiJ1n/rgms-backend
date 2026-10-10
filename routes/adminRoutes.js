@@ -140,7 +140,9 @@ router.post(
     body('customerName').optional().isString().trim(),
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
     body('planId').isMongoId().withMessage('A membership plan must be selected'),
-    body('paymentMethod').optional().isString().trim(),
+    // Manual (front-desk) payments are Walk-in only; GCash comes from the
+    // member's own payment submission and is approved, not typed in here.
+    body('paymentMethod').optional().isString().trim().isIn(['Walk-in']).withMessage('Manual payments can only be recorded as Walk-in'),
     body('referenceNumber').optional().isString().trim(),
   ],
   adminController.createManualPayment

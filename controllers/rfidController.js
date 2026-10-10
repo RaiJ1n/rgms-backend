@@ -9,7 +9,8 @@ const rfidService = require('../services/rfidService');
 const { normalizeUid, isValidUid } = require('../utils/normalizeUid');
 const cardLookup = require('../services/rfidCardLookup');
 const rfidBinding = require('../services/rfidBinding');
-const { identityFor, logUid } = require('../utils/uidHash');
+const { identityFor, logUid, hashUid } = require('../utils/uidHash');
+const escapeRegex = require('../utils/escapeRegex');
 const visitorPassService = require('../services/visitorPassService');
 
 exports.registerCard = async (req, res, next) => {
@@ -176,12 +177,37 @@ exports.registerCard = async (req, res, next) => {
 exports.listCards = async (req, res, next) => {
   try {
     const { limit = 10 } = req.query;
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
 
     // Visitor passes have their own list (GET /temporary); keep them out of
     // the member/employee card list. `$ne` (not `=== 'MEMBER'`) so cards
     // created before cardType existed are still returned.
-    const cards = await RFIDCard.find({ cardType: { $ne: 'TEMPORARY' } })
+    const filter = { cardType: { $ne: 'TEMPORARY' } };
+
+    // Optional search by owner name or card UID. A non-string (?search[$ne]=x)
+    // is ignored, never passed to Mongo.
+    const rawSearch = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 60) : '';
+    if (rawSearch) {
+      const or = [];
+      // Owner name (members and coaches are both Users).
+      const owners = await User.find({ fullname: new RegExp(escapeRegex(rawSearch), 'i') }).select('_id').limit(200);
+      const ownerIds = owners.map((o) => o._id);
+      if (ownerIds.length) or.push({ userId: { $in: ownerIds } }, { coachId: { $in: ownerIds } });
+      // Card UID: partial match on a stored raw UID (separators/case ignored),
+      // the opaque CARD-XXXX reference as shown in the list, and - when UID
+      // hashing is on - an exact match of a full UID against its keyed hash.
+      const uid = normalizeUid(rawSearch);
+      const refText = rawSearch.toUpperCase();
+      if (uid) or.push({ cardId: new RegExp(escapeRegex(uid)) });
+      if (refText !== uid) or.push({ cardId: new RegExp(escapeRegex(refText)) });
+      if (isValidUid(uid)) {
+        const hash = hashUid(uid);
+        if (hash) or.push({ uidHash: hash });
+      }
+      filter.$or = or;
+    }
+
+    const cards = await RFIDCard.find(filter)
       .populate('userId', 'fullname email')
       .populate('coachId', 'fullname email')
       .sort({ createdAt: -1 })

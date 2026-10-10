@@ -1,0 +1,96 @@
+// test/rfidCardSearch.test.js - GET /rfid/cards?search= (Settings > Registered cards)
+// Uses stand-ins for the models; verifies the filter that reaches Mongo.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+process.env.NODE_ENV = 'test';
+process.env.JWT_SECRET = 'test-secret';
+delete process.env.RFID_HASH_SECRET;
+
+const RFIDCard = require('../models/RFIDCard');
+const User = require('../models/User');
+const ctrl = require('../controllers/rfidController');
+const { hashUid } = require('../utils/uidHash');
+
+let seenFilter, ownerQuery, owners;
+function setup() {
+  seenFilter = undefined; ownerQuery = undefined; owners = [];
+  User.find = (q) => { ownerQuery = q; return { select: () => ({ limit: async () => owners }) }; };
+  const chain = { populate() { return chain; }, sort() { return chain; }, limit: async () => ['row'] };
+  RFIDCard.find = (f) => { seenFilter = f; return chain; };
+}
+const list = async (query) => {
+  const out = { body: null, err: null };
+  await ctrl.listCards({ query }, { json: (b) => { out.body = b; } }, (e) => { out.err = e; });
+  return out;
+};
+const matchesCardId = (filter, value) => (filter.$or || []).some((c) => c.cardId instanceof RegExp && c.cardId.test(value));
+
+test('no search: unchanged behaviour (visitor passes excluded, no $or)', async () => {
+  setup();
+  const r = await list({ limit: '100' });
+  assert.equal(r.err, null);
+  assert.deepEqual(seenFilter, { cardType: { $ne: 'TEMPORARY' } });
+  assert.equal(ownerQuery, undefined, 'no owner lookup without a search');
+});
+
+test('search by name: finds owners case-insensitively and filters by userId/coachId', async () => {
+  setup();
+  owners = [{ _id: 'u1' }];
+  await list({ search: 'maria' });
+  assert.ok(ownerQuery.fullname instanceof RegExp && ownerQuery.fullname.flags.includes('i'));
+  assert.ok(ownerQuery.fullname.test('Maria Santos'));
+  assert.deepEqual(seenFilter.$or.find((c) => c.userId), { userId: { $in: ['u1'] } });
+  assert.deepEqual(seenFilter.$or.find((c) => c.coachId), { coachId: { $in: ['u1'] } });
+  assert.deepEqual(seenFilter.cardType, { $ne: 'TEMPORARY' }, 'visitor passes stay excluded');
+});
+
+test('search by UID: full, partial, lowercase and spaced forms all match a raw cardId', async () => {
+  for (const q of ['419A4E16', '419a4e16', '41 9A 4E 16', '4E16', '41:9a']) {
+    setup();
+    await list({ search: q });
+    assert.ok(matchesCardId(seenFilter, '419A4E16'), q);
+  }
+  setup();
+  await list({ search: 'ZZZZ' });
+  assert.ok(!matchesCardId(seenFilter, '419A4E16'));
+});
+
+test('search by the opaque CARD- reference shown in the list', async () => {
+  setup();
+  await list({ search: 'card-1a2b3c' });
+  assert.ok(matchesCardId(seenFilter, 'CARD-1A2B3C4D5E6F'));
+});
+
+test('with UID hashing on: a full UID also matches by keyed hash', async () => {
+  process.env.RFID_HASH_SECRET = 'x'.repeat(32);
+  try {
+    setup();
+    await list({ search: '419A4E16' });
+    assert.ok(seenFilter.$or.some((c) => c.uidHash === hashUid('419A4E16')));
+  } finally {
+    delete process.env.RFID_HASH_SECRET;
+  }
+});
+
+test('regex characters are escaped; operator objects and over-long input are neutralised', async () => {
+  setup();
+  const r = await list({ search: '.*' });
+  assert.equal(r.err, null);
+  assert.ok(!matchesCardId(seenFilter, '419A4E16'), '".*" must not match everything');
+
+  setup();
+  await list({ search: { $ne: 'x' } });
+  assert.deepEqual(seenFilter, { cardType: { $ne: 'TEMPORARY' } }, 'object search ignored');
+
+  setup();
+  await list({ search: 'a'.repeat(500) });
+  const lens = seenFilter.$or.map((c) => c.cardId && c.cardId.source.length).filter(Boolean);
+  assert.ok(lens.every((n) => n <= 60));
+});
+
+test('blank search behaves like no search', async () => {
+  setup();
+  await list({ search: '   ' });
+  assert.deepEqual(seenFilter, { cardType: { $ne: 'TEMPORARY' } });
+});
