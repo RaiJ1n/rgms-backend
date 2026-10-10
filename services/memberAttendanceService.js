@@ -100,6 +100,13 @@ async function doCheckIn({ user, now = new Date(), rfidCardId, memberType, notes
     });
   } catch (err) {
     if (err && err.code === 11000) {
+      // The OLD one-record-per-member-per-day unique index is still in the
+      // database: this is not a duplicate tap, it is a setup problem. Say so
+      // loudly instead of showing members "Scan Too Soon" forever.
+      if (/userId_1_dayKey_1/.test(`${err.message} ${JSON.stringify(err.keyPattern || {})}`)) {
+        console.error('[ATTENDANCE] Old index userId_1_dayKey_1 still exists - run: node scripts/syncAttendanceIndexes.js --apply');
+        throw fail('Attendance database setup is incomplete (old one-per-day index). Tell the admin.', 500, 'legacy_index');
+      }
       // Either the same request arrived twice at once, or another request
       // opened a session an instant earlier. Neither may create a second row.
       if (rid) {
