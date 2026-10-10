@@ -104,6 +104,17 @@ const SCAN_MESSAGES = {
     title: 'Card Not Assigned',
     body: 'This temporary card is not assigned to anyone. Please see the front desk.',
   },
+  // The reader re-sent the same card while it was still on the reader. This is
+  // normal and frequent, so callers keep it SILENT (no LCD change, no admin
+  // popup) - otherwise it would overwrite the TIME IN / TIME OUT confirmation
+  // the member is reading. The text is for REST clients / logs only.
+  duplicate_signal: {
+    lcdLine1: 'DUPLICATE',
+    lcdLine2: 'SCAN IGNORED',
+    buzzer: null,
+    title: 'Duplicate Scan Ignored',
+    body: 'This card was already read a moment ago. Lift the card and tap again to record another action.',
+  },
   duplicate_scan: {
     lcdLine1: 'PLEASE WAIT',
     lcdLine2: 'TRY AGAIN',

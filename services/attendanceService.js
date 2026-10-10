@@ -15,6 +15,7 @@ const visitorPassService = require('./visitorPassService');
 const memberAttendance = require('./memberAttendanceService');
 const TempCardAssignment = require('../models/TempCardAssignment');
 const User = require('../models/User');
+const scanConfig = require('../utils/scanConfig');
 
 const httpError = (message, statusCode, errorType) => {
   const err = new Error(message);
@@ -38,38 +39,84 @@ function emitScanError(errorType, extra) {
   });
 }
 
+// A bridge scanId becomes the attendance idempotency key. Namespaced so it can
+// never collide with an admin-supplied requestId; a malformed id is ignored
+// (a device must never be able to make a tap fail by sending a bad id).
+function scanRequestId(scanId) {
+  if (scanId === undefined || scanId === null || scanId === '') return undefined;
+  try {
+    return memberAttendance.cleanRequestId(`scan:${String(scanId).trim()}`);
+  } catch {
+    console.warn('[RFID] Ignoring malformed scanId');
+    return undefined;
+  }
+}
+
+// Sliding duplicate-SIGNAL filter (replaces the old fixed 10 s per-card
+// cooldown). Returns true when this signal is a NEW physical tap.
+//
+//   accepted  : the card had been quiet for >= debounceMs  -> new tap
+//   duplicate : another signal arrived < debounceMs ago     -> same tap; the
+//               window is pushed forward so a card that is still on the reader
+//               (and keeps re-sending) never turns into a second tap.
+//
+// The accept is ONE conditional update on the card document, so two requests
+// carrying the same signal at the same instant cannot both be accepted. The
+// window is measured between SIGNALS, not between actions, so deliberate taps
+// 1.5 s (default) apart are never delayed by a leftover cooldown.
+async function claimSignal(card, now) {
+  const windowMs = scanConfig.debounceMs;
+  if (windowMs <= 0) return true;
+  const cutoff = new Date(now.getTime() - windowMs);
+  const claimed = await RFIDCard.findOneAndUpdate(
+    { _id: card._id, $or: [{ lastSignalAt: null }, { lastSignalAt: { $lt: cutoff } }] },
+    { $set: { lastSignalAt: now, lastScannedAt: now } },
+  );
+  if (claimed) return true;
+  // Duplicate: slide the window forward (never backwards).
+  await RFIDCard.updateOne({ _id: card._id, lastSignalAt: { $lt: now } }, { $set: { lastSignalAt: now } });
+  return false;
+}
+
+// If the tap failed for an UNEXPECTED reason (database error etc., not a
+// business denial) release the claim so the member's immediate retap is not
+// swallowed as a "duplicate" of a tap that never happened.
+async function releaseSignal(card) {
+  try {
+    await RFIDCard.updateOne({ _id: card._id }, { $unset: { lastSignalAt: 1 } });
+  } catch (e) {
+    console.error('[RFID] Could not release scan claim', e.message);
+  }
+}
+
 /**
  * Single source of truth for "what happens when a card is scanned."
  * Used by BOTH the serial/Arduino listener (rfidService.js) and the
- * REST fallback endpoint (rfidController.scanCard), so there is only
- * one place that decides check-in vs check-out — for members AND now
- * employees/coaches.
+ * REST endpoint (rfidController.scanCard), so there is only one place that
+ * decides check-in vs check-out - for members AND employees/coaches.
+ *
+ * `opts.scanId` (optional) identifies ONE physical tap. A retry of the same
+ * tap (lost response, bridge timeout) carries the same id and gets the original
+ * result back instead of toggling again.
  */
-async function processScan(cardId) {
+async function processScan(cardId, opts = {}) {
   const raw = cardId;
   const uid = normalizeUid(cardId);
+  const rid = scanRequestId(opts.scanId);
 
   // Safe debug logging: UID only, never passwords/secrets/PII.
-  // Single explicit line per tap (per diagnostics spec): raw → normalized
-  // → match yes/no, so an attendance-mode failure is visible without
-  // inferring it from the LCD.
-  console.log(`[RFID] Attendance request — incoming: ${logUid(raw)} → normalized: ${logUid(uid)}`);
+  console.log(`[RFID] Attendance request - incoming: ${logUid(raw)} -> normalized: ${logUid(uid)}`);
 
   if (!/^[0-9A-F]{8,14}$/i.test(uid)) {
-    console.log(`[RFID] Attendance request — incoming: ${logUid(raw)} → normalized: ${logUid(uid)} → match: no (invalid_format)`);
+    console.log(`[RFID] Attendance request - incoming: ${logUid(raw)} -> normalized: ${logUid(uid)} -> match: no (invalid_format)`);
     throw httpError('Invalid cardId format', 400, 'invalid_format');
   }
 
   const card = await cardLookup.findByUid(uid).populate('userId').populate('coachId');
-  console.log(`[RFID] Attendance request — incoming: ${logUid(raw)} → normalized: ${logUid(uid)} → match: ${card ? 'yes' : 'no'}`);
+  console.log(`[RFID] Attendance request - incoming: ${logUid(raw)} -> normalized: ${logUid(uid)} -> match: ${card ? 'yes' : 'no'}`);
 
-  // Split into two distinct cases (previously both collapsed into
-  // 'card_invalid'): a UID that was never registered at all needs a
-  // "please register this card" message, while a UID that *is*
-  // registered but was deactivated by an admin needs an "access denied"
-  // message — conflating them meant an unregistered card and a
-  // deliberately-disabled one looked identical to whoever was standing
-  // at the reader.
+  // Unregistered vs deactivated are different messages on purpose (see
+  // utils/scanMessages.js).
   if (!card) {
     emitScanError('card_unregistered', { uid });
     throw httpError('Card not found', 404, 'card_unregistered');
@@ -81,40 +128,44 @@ async function processScan(cardId) {
 
   const now = new Date();
 
-  // Duplicate scan prevention (10-second cooldown) — applies identically
-  // to member and employee cards.
-  if (card.lastScannedAt && (now - card.lastScannedAt) / 1000 < 10) {
-    throw httpError('Duplicate scan prevented (wait 10 seconds)', 429, 'duplicate_scan');
-  }
-
-  // Visitor / temporary pass: its own validation path. It must be checked
-  // BEFORE the userId/coachId branches below — a TEMPORARY card has neither,
-  // and must never fall through to the "not linked" case or to member logic.
-  if (card.cardType === 'TEMPORARY') {
-    // Lent to an existing member: resolve to that member and use the normal
-    // member rules. The tap is an alternative credential, not a new identity.
-    if (card.memberAssignmentId) return processMemberLoanScan(card, now);
-    // A spare card nobody currently holds (never issued, or returned) must
-    // grant nothing - and say so, rather than look like a visitor problem.
-    if (visitorPassService.isUnassigned(card)) {
-      emitScanError('temp_card_not_assigned', { uid: card.cardId });
-      throw httpError('Temporary card is not assigned', 403, 'temp_card_not_assigned');
+  // Same physical tap re-sent by the reader? (Applies to every card type.)
+  if (!(await claimSignal(card, now))) {
+    // A retried request for a tap that already succeeded must get that result,
+    // not "duplicate" - the first attempt's own claim is what we just collided with.
+    const prior = rid ? await memberAttendance.findReplay(rid) : null;
+    if (prior) {
+      const user = await User.findById(prior.attendance.userId);
+      if (user) return { action: prior.action, attendance: prior.attendance, event: null, user, replayed: true };
     }
-    return processVisitorScan(card, now);
+    throw httpError('Duplicate scan signal ignored', 429, 'duplicate_signal');
   }
 
-  // Which kind of card is this? Exactly one of userId/coachId should be
-  // populated — registerCard enforces that at registration time.
-  if (card.coachId) {
-    return processEmployeeScan(card, now);
-  }
-  if (card.userId) {
-    return processMemberScan(card, now);
-  }
+  try {
+    // Visitor / temporary pass: its own validation path. Checked BEFORE the
+    // userId/coachId branches - a TEMPORARY card has neither, and must never
+    // fall through to the "not linked" case or to member logic.
+    if (card.cardType === 'TEMPORARY') {
+      // Lent to an existing member: resolve to that member and use the normal
+      // member rules. The tap is an alternative credential, not a new identity.
+      if (card.memberAssignmentId) return await processMemberLoanScan(card, now, rid);
+      // A spare card nobody currently holds grants nothing - and says so.
+      if (visitorPassService.isUnassigned(card)) {
+        emitScanError('temp_card_not_assigned', { uid: card.cardId });
+        throw httpError('Temporary card is not assigned', 403, 'temp_card_not_assigned');
+      }
+      return await processVisitorScan(card, now);
+    }
 
-  // A card that's active but bound to neither — shouldn't be reachable
-  // given registerCard's validation, but fail closed rather than assume.
-  throw httpError('Card is not linked to a member or employee', 404, 'card_unregistered');
+    // Exactly one of userId/coachId should be populated (registerCard enforces it).
+    if (card.coachId) return await processEmployeeScan(card, now);
+    if (card.userId) return await processMemberScan(card, now, null, rid);
+
+    // Active but bound to neither - fail closed.
+    throw httpError('Card is not linked to a member or employee', 404, 'card_unregistered');
+  } catch (err) {
+    if (!err.statusCode) await releaseSignal(card);
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -135,9 +186,6 @@ async function processEmployeeScan(card, now) {
     });
     throw httpError('This coach account has been deactivated', 403, 'employee_inactive');
   }
-
-  card.lastScannedAt = now;
-  await card.save();
 
   const startOfDay = startOfLocalDay(now);
 
@@ -438,7 +486,7 @@ async function checkMemberEligibility(user, now = new Date()) {
 // assignment to the member, enforces assignment validity/expiry, then hands
 // over to processMemberScan - the one place that applies subscription and
 // attendance rules and deducts a session.
-async function processMemberLoanScan(card, now) {
+async function processMemberLoanScan(card, now, rid) {
   const deny = (errorType, message) => {
     emitScanError(errorType, { uid: card.cardId });
     return httpError(message, 403, errorType);
@@ -457,12 +505,12 @@ async function processMemberLoanScan(card, now) {
   const user = await User.findById(assignment.memberId);
   if (!user) throw deny('temp_card_not_assigned', 'Temporary card is not assigned');
 
-  return processMemberScan(card, now, { user, assignment });
+  return processMemberScan(card, now, { user, assignment }, rid);
 }
 
 // `via` is only set when the tap came from a temporary card:
 // { user, assignment } - the member the assignment resolves to.
-async function processMemberScan(card, now, via = null) {
+async function processMemberScan(card, now, via = null, rid) {
   const user = via ? via.user : card.userId;
 
   // Same rules as always (see checkMemberEligibility), now emitting the same
@@ -478,27 +526,24 @@ async function processMemberScan(card, now, via = null) {
     throw httpError(eligibility.message, eligibility.status, eligibility.errorType);
   }
 
-  // Atomic cooldown claim (was: read lastScannedAt, then save). Two taps on
-  // one card inside the same instant can no longer both get past this point.
-  const cutoff = new Date(now.getTime() - 10 * 1000);
-  const claimed = await RFIDCard.findOneAndUpdate(
-    { _id: card._id, $or: [{ lastScannedAt: null }, { lastScannedAt: { $lt: cutoff } }] },
-    { $set: { lastScannedAt: now } },
-  );
-  if (!claimed) throw httpError('Duplicate scan prevented (wait 10 seconds)', 429, 'duplicate_scan');
-  card.lastScannedAt = now;
-
+  // Duplicate-signal filtering already happened in processScan (claimSignal).
   // Multiple sessions per day: an open session => Time-Out, otherwise a NEW
   // Time-In. The open/closed state always comes from the DB (never memory),
-  // and the shared service makes a lost race a duplicate, not a second row.
-  const { action, attendance } = await memberAttendance.toggle({
+  // inside the member's lock, and the shared service makes a lost race a
+  // duplicate, not a second row.
+  const { action, attendance, replayed } = await memberAttendance.toggle({
     user,
     now,
     rfidCardId: card._id,
     // No admin present at a card scan to pick Regular/Student manually,
     // so fall back to the account's existing promo flag.
     memberType: user.studentPromoActive ? 'Student' : 'Regular',
+    requestId: rid,
   });
+
+  // A replay is a retried tap whose first attempt already audited/broadcast
+  // everything; repeating that would double-announce one action.
+  if (replayed) return { action, attendance, event: null, user, replayed: true };
 
   await AuditLog.create({
     action: `rfid_${action}`,

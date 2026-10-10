@@ -360,7 +360,7 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
       console.log(`[RFID] ✓ Connected to ${requestedPath} @ ${baudRate} baud`);
 
       parser = serialPort.pipe(new ReadlineParser({ delimiter: '\n' }));
-      parser.on('data', handleRFIDData);
+      parser.on('data', enqueueRFIDLine);
 
       // Resync the Arduino's idle screen to the backend's current
       // registrationMode. Covers the case where the backend restarts
@@ -457,6 +457,19 @@ function closeCurrentPort() {
 // ============================================================================
 // Delegates the actual check-in/check-out decision to attendanceService,
 // the same function the REST /api/rfid/scan fallback uses.
+
+// Serial lines are handled strictly one at a time, in the order they arrived.
+// Without this, a fast tap sequence ran as overlapping async handlers (each
+// awaiting the database), so tap 2 could start before tap 1 had finished and
+// the IN/OUT order was left to timing luck. Nothing is dropped: a tap that
+// arrives while another is processing simply waits its turn.
+let scanChain = Promise.resolve();
+function enqueueRFIDLine(line) {
+  scanChain = scanChain
+    .then(() => handleRFIDData(line))
+    .catch((err) => console.error('[RFID] Unhandled error while processing a tap:', err && err.message));
+  return scanChain;
+}
 
 async function handleRFIDData(line) {
   const raw = line.trim();
@@ -608,6 +621,12 @@ async function handleRFIDData(line) {
   } catch (err) {
     // processScan already emits admin rfid:error events for every
     // rejection case; this just logs and drives the LCD.
+    // The reader re-sending a card that is still on it: expected and frequent.
+    // Stay silent so the TIME IN / TIME OUT confirmation is not overwritten.
+    if (err.errorType === 'duplicate_signal') {
+      console.log(`[RFID] Repeated reader signal for ${uid} ignored (same physical tap)`);
+      return;
+    }
     console.warn(`[RFID] Scan rejected for ${uid}: ${err.message}`);
 
     // Distinct line1/line2 per errorType (unknown card, expired

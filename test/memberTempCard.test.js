@@ -143,7 +143,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const res = () => { const r = { code: 200, body: null, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
 const call = async (fn, req) => { const r = res(); await fn({ user: admin, body: {}, query: {}, params: {}, ...req }, r, (e) => { throw e; }); return r; };
 const issue = (memberId, tempCardUid, extra = {}) => call(tempCtl.issueToMember, { body: { memberId, tempCardUid, originalNotPresent: true, ...extra } });
-const settle = () => cards.forEach((c) => { if (c.lastScannedAt) c.lastScannedAt = new Date(Date.now() - 60_000); });
+// Quiet reader: move the last-signal marker back past the debounce window instead of sleeping.
+const settle = () => cards.forEach((c) => { if (c.lastScannedAt) c.lastScannedAt = new Date(Date.now() - 60_000); if (c.lastSignalAt) c.lastSignalAt = new Date(Date.now() - 60_000); });
 const tap = async (uid) => { settle(); return attendanceService.processScan(uid); };
 const cardOf = (uid) => cards.find((c) => c.cardId === uid);
 

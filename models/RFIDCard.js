@@ -51,7 +51,12 @@ const rfidCardSchema = new mongoose.Schema({
   checkedOutAt: { type: Date },
 
   active: { type: Boolean, default: true },
+  // Last ACCEPTED tap on this card (a repeated reader signal does not move it).
   lastScannedAt: { type: Date },
+  // Last reader signal seen for this card, accepted OR repeated. Drives the
+  // sliding debounce (see utils/scanConfig.js): every repeat pushes it forward,
+  // so a card resting on the reader stays one tap until it has been quiet.
+  lastSignalAt: { type: Date },
   assignedAt: { type: Date },
   // Set only while this spare card is lent to an existing MEMBER as a
   // temporary replacement for a forgotten card (see TempCardAssignment).
