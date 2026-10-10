@@ -105,7 +105,8 @@ const issue = async (cardId, visitorName) => { await sleep(3); return issueNow(c
 const issueNow = (cardId, visitorName) => run((r) =>
   rfid.issueTemporaryCard({ body: { cardId, visitorName }, user: admin }, r, (e) => { throw e; }));
 // The 10s duplicate-scan guard is by design; move lastScannedAt back instead of sleeping.
-const settle = () => cards.forEach((c) => { if (c.lastScannedAt) c.lastScannedAt = new Date(Date.now() - 60_000); });
+// Quiet reader: move the last-signal marker back past the debounce window instead of sleeping.
+const settle = () => cards.forEach((c) => { if (c.lastScannedAt) c.lastScannedAt = new Date(Date.now() - 60_000); if (c.lastSignalAt) c.lastSignalAt = new Date(Date.now() - 60_000); });
 const tap = async (uid) => { settle(); return attendanceService.processScan(uid); };
 const cardOf = (uid) => cards.find((c) => c.cardId === uid);
 

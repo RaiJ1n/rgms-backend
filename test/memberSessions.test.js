@@ -60,7 +60,8 @@ const manual = async (body, headers = {}) => {
 };
 const timeIn = (extra = {}) => manual({ userId: M._id, action: 'checkin', ...extra });
 const timeOut = (extra = {}) => manual({ userId: M._id, action: 'checkout', ...extra });
-const settle = () => cards.forEach((c) => { if (c.lastScannedAt) c.lastScannedAt = new Date(Date.now() - 60_000); });
+// Quiet reader: move the last-signal marker back past the debounce window instead of sleeping.
+const settle = () => cards.forEach((c) => { if (c.lastScannedAt) c.lastScannedAt = new Date(Date.now() - 60_000); if (c.lastSignalAt) c.lastSignalAt = new Date(Date.now() - 60_000); });
 const tap = async (uid = UID) => { settle(); return attendanceService.processScan(uid); };
 const mine = () => attendance.filter((a) => same(a.userId, M._id));
 const open = () => mine().filter((a) => !a.checkOut);
@@ -325,13 +326,14 @@ test('RFID: an accidental double tap (same instant) is one action, not in+out', 
   assert.equal(mine().length, 1);
   assert.equal(open().length, 1);
   const rej = r.find((x) => x.status === 'rejected').reason;
-  assert.equal(rej.errorType, 'duplicate_scan');
+  assert.equal(rej.errorType, 'duplicate_signal');
 });
 
-test('RFID: a second tap right after (inside the cooldown) is refused', async () => {
+test('RFID: a repeated signal right after a tap (inside the debounce window) is the same tap, not a check-out', async () => {
   await tap();
-  await assert.rejects(() => attendanceService.processScan(UID), (e) => e.errorType === 'duplicate_scan');
+  await assert.rejects(() => attendanceService.processScan(UID), (e) => e.errorType === 'duplicate_signal');
   assert.equal(mine().length, 1);
+  assert.equal(open().length, 1, 'still checked in - the repeat did not check out');
 });
 
 // ------------------------------------------------------- history & reports

@@ -19,9 +19,13 @@
 //     from the plan's day span), so only the FIRST Time-In of a Manila day
 //     deducts one. Further Time-Ins the same day deduct nothing.
 //   * Timestamps are the server's clock (`now`), never the client's.
+//   * Every action for one member runs through a per-member FIFO lock, so
+//     taps/requests for the same member are applied in the order they were
+//     received (in-process coordination; the DB index above is the guarantee).
 const Attendance = require('../models/Attendance');
 const subscriptionService = require('./subscriptionService');
 const { startOfLocalDay, formatLocalDateLabel } = require('../utils/localDate');
+const { withKeyLock } = require('../utils/keyedMutex');
 
 const fail = (message, statusCode, errorType) => {
   const err = new Error(message);
@@ -63,7 +67,7 @@ async function retireStaleOpenSessions(userId, now = new Date()) {
 }
 
 // Time-In: always a NEW row; never touches an earlier session.
-async function checkIn({ user, now = new Date(), rfidCardId, memberType, notes, requestId } = {}) {
+async function doCheckIn({ user, now = new Date(), rfidCardId, memberType, notes, requestId } = {}) {
   const rid = cleanRequestId(requestId);
   const userId = user._id;
 
@@ -130,7 +134,7 @@ async function checkIn({ user, now = new Date(), rfidCardId, memberType, notes, 
 }
 
 // Time-Out: closes exactly the member's open session.
-async function checkOut({ user, now = new Date(), requestId } = {}) {
+async function doCheckOut({ user, now = new Date(), requestId } = {}) {
   const rid = cleanRequestId(requestId);
   const userId = user._id;
 
@@ -163,21 +167,53 @@ async function checkOut({ user, now = new Date(), requestId } = {}) {
   return { attendance: closed, action: 'checkout', replayed: false };
 }
 
-// RFID tap: no explicit intent, so it toggles - open session => Time-Out,
-// otherwise Time-In. A tap that loses a race against another tap is a
-// duplicate, not a new action.
-async function toggle({ user, now = new Date(), rfidCardId, memberType } = {}) {
-  const open = await findOpenSession(user._id, now);
-  try {
-    return open
-      ? await checkOut({ user, now })
-      : await checkIn({ user, now, rfidCardId, memberType });
-  } catch (err) {
-    if (err.errorType === 'already_checked_in' || err.errorType === 'not_checked_in') {
-      throw fail('Duplicate scan prevented', 429, 'duplicate_scan');
-    }
-    throw err;
+// Looks a request id up in BOTH idempotency fields: a Time-In stores it as
+// requestId, a Time-Out as checkOutRequestId. Returns the original outcome or
+// null. `userId` (optional) guards against one id being reused for another
+// member.
+async function findReplay(rid, userId) {
+  if (!rid) return null;
+  let prior = await Attendance.findOne({ requestId: rid });
+  let action = 'checkin';
+  if (!prior) {
+    prior = await Attendance.findOne({ checkOutRequestId: rid });
+    action = 'checkout';
   }
+  if (!prior) return null;
+  if (userId && !sameId(prior.userId, userId)) throw fail('That request id belongs to a different request', 409, 'request_id_conflict');
+  return { attendance: prior, action, replayed: true, ...(action === 'checkin' ? { deducted: false } : {}) };
 }
 
-module.exports = { checkIn, checkOut, toggle, findOpenSession, retireStaleOpenSessions, cleanRequestId, fail };
+// RFID tap: no explicit intent, so it toggles - open session => Time-Out,
+// otherwise Time-In. The open/closed state is read from the DB inside the
+// member's lock, so consecutive taps alternate IN, OUT, IN, OUT... in the
+// order they arrive. A tap that still loses a race (another process, the admin
+// screen) is a duplicate, not a new action. With a requestId (the bridge's
+// per-tap scanId) a retried tap returns the original result instead of
+// toggling again.
+async function toggle({ user, now = new Date(), rfidCardId, memberType, requestId } = {}) {
+  const rid = cleanRequestId(requestId);
+  return withKeyLock(`member:${user._id}`, async () => {
+    if (rid) {
+      const replay = await findReplay(rid, user._id);
+      if (replay) return replay;
+    }
+    const open = await findOpenSession(user._id, now);
+    try {
+      return open
+        ? await doCheckOut({ user, now, requestId: rid })
+        : await doCheckIn({ user, now, rfidCardId, memberType, requestId: rid });
+    } catch (err) {
+      if (err.errorType === 'already_checked_in' || err.errorType === 'not_checked_in') {
+        throw fail('Duplicate scan prevented', 429, 'duplicate_scan');
+      }
+      throw err;
+    }
+  });
+}
+
+// Public single-action entry points (admin manual attendance): same lock.
+const checkIn = (args = {}) => withKeyLock(`member:${args.user && args.user._id}`, () => doCheckIn(args));
+const checkOut = (args = {}) => withKeyLock(`member:${args.user && args.user._id}`, () => doCheckOut(args));
+
+module.exports = { checkIn, checkOut, toggle, findOpenSession, findReplay, retireStaleOpenSessions, cleanRequestId, fail };
