@@ -19,6 +19,7 @@ const TempCardAssignment = require('../models/TempCardAssignment');
 const cardLookup = require('./rfidCardLookup');
 const visitorPassService = require('./visitorPassService');
 const attendanceService = require('./attendanceService');
+const memberAttendance = require('./memberAttendanceService');
 const socketUtil = require('../utils/socket');
 const escapeRegex = require('../utils/escapeRegex');
 const { normalizeUid, isValidUid } = require('../utils/normalizeUid');
@@ -122,8 +123,7 @@ async function searchMembers(rawQuery, now = new Date()) {
     const eligibility = await attendanceService.checkMemberEligibility(u, now);
     const cards = await RFIDCard.find({ userId: u._id, active: true });
     const loan = await TempCardAssignment.findOne({ memberId: u._id, status: { $in: HOLDING } });
-    const startOfDay = startOfLocalDay(now);
-    const today = await Attendance.findOne({ userId: u._id, createdAt: { $gte: startOfDay } });
+    const insideNow = await memberAttendance.findOpenSession(u._id, now);
     out.push({
       _id: u._id,
       fullname: u.fullname,
@@ -134,7 +134,7 @@ async function searchMembers(rawQuery, now = new Date()) {
       registeredCardRef: cards[0] ? cards[0].cardId : null,
       hasRegisteredCard: cards.length > 0,
       activeLoan: !!loan,
-      attendanceToday: today ? (today.checkOut ? 'COMPLETED' : 'CHECKED_IN') : null,
+      attendanceToday: insideNow ? 'CHECKED_IN' : null,
     });
   }
   return out;
@@ -162,16 +162,13 @@ async function issueToMember({ memberId, tempUid, originalUid, originalNotPresen
     );
   }
 
-  // 2. Attendance rule: one visit per member per day. If they already have a
-  //    visit today (inside, or completed) a spare card has no purpose.
-  const today = await Attendance.findOne({ userId: member._id, createdAt: { $gte: startOfLocalDay(now) } });
-  if (today) {
-    throw httpError(
-      today.checkOut
-        ? `${member.fullname} already completed attendance today`
-        : `${member.fullname} is already checked in today`,
-      409, 'attendance_today_exists',
-    );
+  // 2. A spare card is for getting INTO the gym. If the member is already
+  //    inside (open session) there is nothing to issue; to leave they tap out.
+  //    Earlier completed sessions today do not matter - members may time in
+  //    again.
+  const open = await memberAttendance.findOpenSession(member._id, now);
+  if (open) {
+    throw httpError(`${member.fullname} is already checked in`, 409, 'attendance_today_exists');
   }
 
   // 3. One active loan per member (friendly message; the partial unique index

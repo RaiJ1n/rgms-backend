@@ -12,6 +12,7 @@ const cardLookup = require('./rfidCardLookup');
 const { logUid } = require('../utils/uidHash');
 const { normalizeUid } = require('../utils/normalizeUid');
 const visitorPassService = require('./visitorPassService');
+const memberAttendance = require('./memberAttendanceService');
 const TempCardAssignment = require('../models/TempCardAssignment');
 const User = require('../models/User');
 
@@ -487,69 +488,17 @@ async function processMemberScan(card, now, via = null) {
   if (!claimed) throw httpError('Duplicate scan prevented (wait 10 seconds)', 429, 'duplicate_scan');
   card.lastScannedAt = now;
 
-  // Today's open session, from the DB — never from in-memory state
-  const startOfDay = startOfLocalDay(now);
-
-  let attendance = await Attendance.findOne({
-    userId: user._id,
-    createdAt: { $gte: startOfDay },
-    checkOut: { $exists: false },
+  // Multiple sessions per day: an open session => Time-Out, otherwise a NEW
+  // Time-In. The open/closed state always comes from the DB (never memory),
+  // and the shared service makes a lost race a duplicate, not a second row.
+  const { action, attendance } = await memberAttendance.toggle({
+    user,
+    now,
+    rfidCardId: card._id,
+    // No admin present at a card scan to pick Regular/Student manually,
+    // so fall back to the account's existing promo flag.
+    memberType: user.studentPromoActive ? 'Student' : 'Regular',
   });
-
-  let action = 'checkin';
-  if (attendance) {
-    attendance.checkOut = now;
-    await attendance.save();
-    action = 'checkout';
-  } else {
-    // One-Tap-Per-Day: a member who already completed a full check-in/
-    // check-out cycle today gets no second cycle, even after the 10s
-    // cooldown has passed. Without this, nothing stopped repeated in/out
-    // taps from logging unlimited attendance pairs in a single day.
-    const alreadyCompletedToday = await Attendance.findOne({
-      userId: user._id,
-      subjectType: 'member',
-      createdAt: { $gte: startOfDay },
-      checkOut: { $exists: true },
-    });
-
-    if (alreadyCompletedToday) {
-      emitScanError('daily_attendance_completed', {
-        uid: card.cardId,
-        userId: user._id,
-        fullname: user.fullname,
-      });
-      throw httpError('Attendance already completed for today', 403, 'daily_attendance_completed');
-    }
-
-    try {
-      attendance = await Attendance.create({
-        userId: user._id,
-        subjectType: 'member',
-        attendanceType: 'MEMBER',
-        dayKey: formatLocalDateLabel(now),
-        rfidCardId: card._id,
-        checkIn: now,
-        // No admin present at a card scan to pick Regular/Student manually,
-        // so fall back to the account's existing promo flag.
-        memberType: user.studentPromoActive ? 'Student' : 'Regular',
-      });
-    } catch (err) {
-      // Unique (userId, dayKey) index: a concurrent tap - on this card or the
-      // member's other card - already created today's row. The loser records
-      // nothing and deducts nothing.
-      if (err && err.code === 11000) {
-        throw httpError('Attendance was just recorded for this member', 429, 'duplicate_scan');
-      }
-      throw err;
-    }
-
-    // Session deduction (Group 3): only on a genuine new check-in, never
-    // on the checkout branch above — one RFID-granted visit deducts
-    // exactly one session, regardless of the check-in/check-out pair it
-    // produces. No-ops for a Day Pass plan — see recordAttendanceSession.
-    await subscriptionService.recordAttendanceSession(user._id);
-  }
 
   await AuditLog.create({
     action: `rfid_${action}`,

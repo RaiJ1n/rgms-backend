@@ -96,6 +96,7 @@ function install(Model, store, defaults = {}, uniqueCheck = () => {}) {
     return d;
   };
   Model.updateOne = async (f, u) => { const d = store.find((x) => matches(x, f)); if (d) applyUpdate(d, u); return { modifiedCount: d ? 1 : 0 }; };
+  Model.countDocuments = async (f = {}) => store.filter((d) => matches(d, f)).length;
   Model.updateMany = async (f, u) => { const rows = store.filter((x) => matches(x, f)); rows.forEach((d) => applyUpdate(d, u)); return { modifiedCount: rows.length }; };
 }
 
@@ -105,9 +106,10 @@ install(RFIDCard, cards, { active: true, cardType: 'MEMBER' }, (d, s) => {
   if (s.some((x) => x.cardId === d.cardId)) throw dup();
 });
 install(Attendance, attendance, {}, (d, s) => {
-  // mirrors the partial unique index { userId, dayKey } where attendanceType MEMBER
-  if (d.attendanceType === 'MEMBER' && typeof d.dayKey === 'string'
-      && s.some((x) => x.attendanceType === 'MEMBER' && same(x.userId, d.userId) && x.dayKey === d.dayKey)) throw dup();
+  // mirrors the partial unique indexes: one_open_session_per_member { userId } where openSession,
+  // and the requestId / checkOutRequestId keys
+  if (d.openSession === true && s.some((x) => x.openSession === true && same(x.userId, d.userId))) throw dup();
+  if (typeof d.requestId === 'string' && s.some((x) => x.requestId === d.requestId)) throw dup();
 });
 install(User, users, { isActive: true, role: 'user' });
 install(Subscription, subs);
@@ -214,13 +216,12 @@ test('issue: expired / inactive / no-subscription / deactivated members are refu
   assert.equal(cardOf(UID_SPARE), undefined);
 });
 
-test('issue: refused when the member already has a visit today (checked in, or completed)', async () => {
+test('issue: refused while the member is checked in; allowed after they time out (members may time in again)', async () => {
   await tap(UID_ORIG); // inside
   assert.equal((await issue(M1._id, UID_SPARE)).body.errorType, 'attendance_today_exists');
-  await tap(UID_ORIG); // checked out
+  await tap(UID_ORIG); // timed out - a completed session today no longer blocks
   const r = await issue(M1._id, UID_SPARE);
-  assert.equal(r.code, 409);
-  assert.match(r.body.message, /already completed/);
+  assert.equal(r.code, 201);
 });
 
 test('issue: refused when the card is a member card, lent to someone, or an active visitor pass', async () => {
@@ -267,18 +268,18 @@ test('tap: the spare card resolves to the existing member; subscription deducted
   assert.equal(attendance.filter((a) => a.attendanceType === 'VISITOR').length, 0);
 });
 
-test('tap: original + temporary on the same day share ONE attendance row and ONE deduction', async () => {
+test('tap: original + temporary are the same member - sessions alternate in/out, one deduction per day', async () => {
   await issue(M1._id, UID_SPARE);
-  await tap(UID_SPARE);                       // check-in via spare
-  const out = await tap(UID_ORIG);            // original card -> same row, checkout
+  await tap(UID_SPARE);                       // Time-In via spare   (session 1)
+  const out = await tap(UID_ORIG);            // original card -> Time-Out of session 1
   assert.equal(out.action, 'checkout');
   assert.equal(attendance.length, 1);
   assert.ok(attendance[0].checkOut);
-  assert.equal(deductions.length, 1);
-  await assert.rejects(() => tap(UID_SPARE), (e) => e.errorType === 'daily_attendance_completed');
-  await assert.rejects(() => tap(UID_ORIG), (e) => e.errorType === 'daily_attendance_completed');
-  assert.equal(attendance.length, 1);
-  assert.equal(deductions.length, 1);
+  const again = await tap(UID_SPARE);         // spare again -> NEW session (session 2)
+  assert.equal(again.action, 'checkin');
+  assert.equal(attendance.length, 2);
+  assert.equal(attendance.filter((a) => !a.checkOut).length, 1, 'exactly one open session');
+  assert.equal(deductions.length, 1, 'a subscription session is one gym day: only the first Time-In of the day deducts');
 });
 
 test('tap: expired subscription still blocks entry on a spare card (rules are the member rules)', async () => {

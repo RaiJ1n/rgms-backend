@@ -6,9 +6,8 @@
 //   TempCardAssignment (new, empty collection)
 //     one_active_per_member  unique {memberId}   where status = 'ACTIVE'
 //     one_holder_per_card    unique {tempCardId} where holdsCard = true
-//   Attendance
-//     unique {userId, dayKey} where attendanceType = 'MEMBER' and dayKey is a string
-//     (partial: existing rows have no dayKey, so none of them are indexed)
+//   Attendance - see scripts/syncAttendanceIndexes.js (one open session per member;
+//     it also DROPS the old one-row-per-day index this script used to describe)
 //
 // BACK UP FIRST (mongodump of rfidcards, attendances, subscriptions), then:
 //   node scripts/syncTempCardIndexes.js          # prints what it will create
