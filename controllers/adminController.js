@@ -20,6 +20,7 @@ const paymentQuery = require('../services/paymentQueryService');
 const { parseRange } = require('../utils/dateRange');
 const { formatLocalDateLabel, startOfLocalDay } = require('../utils/localDate');
 const attendanceService = require('../services/attendanceService');
+const memberAttendance = require('../services/memberAttendanceService');
 const { buildMedicalDocumentResponse } = require('./userController');
 
 const getUsers = async (req, res) => {
@@ -743,7 +744,8 @@ const getSubscriptions = async (req, res, next) => {
 };
 // Admin "Add Attendance". Three kinds of person, each with its own validation,
 // reusing the system's existing attendance rules instead of a parallel set:
-//   - member        { userId, action? }       same one-visit-per-day rule as RFID
+//   - member        { userId, action?, requestId? }  same session rules as RFID: many
+//                                              sessions per day, one open at a time
 //   - visitor pass  { visitorPassId, action? } goes through the SAME service code
 //                                              as an RFID tap (pass + attendance +
 //                                              card stay consistent)
@@ -787,7 +789,6 @@ const createManualAttendance = async (req, res, next) => {
       }
     }
 
-    const startOfDay = startOfLocalDay();
 
     // ---- Member ------------------------------------------------------------
     if (userId) {
@@ -797,69 +798,60 @@ const createManualAttendance = async (req, res, next) => {
         return res.status(403).json({ success: false, message: 'This member account has been deactivated' });
       }
 
-      const open = await Attendance.findOne({ userId: user._id, createdAt: { $gte: startOfDay }, checkOut: { $exists: false } });
-
-      if (action === 'checkout') {
-        if (!open) return res.status(409).json({ success: false, message: `${user.fullname} is not checked in today` });
-        const closed = await Attendance.findOneAndUpdate(
-          { _id: open._id, checkOut: { $exists: false } },
-          { $set: { checkOut: new Date() } },
-          { new: true },
-        );
-        if (!closed) return res.status(409).json({ success: false, message: `${user.fullname} has already checked out` });
-        await closed.populate('userId', 'fullname email phone');
-        socketUtil.emitToAdmins('stats:refresh');
-        socketUtil.emitToAdmins('attendance', {
-          type: 'checkout', subjectType: 'member', attendanceType: 'MEMBER',
-          attendance: { _id: closed._id, checkIn: closed.checkIn, checkOut: closed.checkOut },
-          user: { _id: user._id, fullname: user.fullname },
-        });
-        return res.status(200).json({ success: true, message: 'Member checked out', data: closed });
-      }
-
-      // Same One-Tap-Per-Day rule the RFID reader enforces.
-      if (open) return res.status(409).json({ success: false, message: `${user.fullname} is already checked in` });
-      const completed = await Attendance.findOne({
-        userId: user._id, subjectType: 'member', createdAt: { $gte: startOfDay }, checkOut: { $exists: true },
-      });
-      if (completed) {
-        return res.status(409).json({ success: false, message: `${user.fullname} already completed attendance today` });
-      }
-
-      let attendance;
+      // Shared with the RFID tap: many sessions per day, one open at a time,
+      // server clock, idempotent when a requestId is supplied. Success is
+      // returned only after the database write has been confirmed.
+      const requestId = req.body.requestId || req.get('Idempotency-Key') || undefined;
       try {
-        const nowIn = new Date();
-        attendance = await Attendance.create({
-          userId: user._id,
-          subjectType: 'member',
-          attendanceType: 'MEMBER',
-          dayKey: formatLocalDateLabel(nowIn),
-          memberType: memberType === 'Student' ? 'Student' : 'Regular',
-          checkIn: nowIn,
+        if (action === 'checkout') {
+          const out = await memberAttendance.checkOut({ user, now: new Date(), requestId });
+          await out.attendance.populate('userId', 'fullname email phone');
+          if (!out.replayed) {
+            socketUtil.emitToAdmins('stats:refresh');
+            socketUtil.emitToAdmins('attendance', {
+              type: 'checkout', subjectType: 'member', attendanceType: 'MEMBER',
+              attendance: { _id: out.attendance._id, checkIn: out.attendance.checkIn, checkOut: out.attendance.checkOut },
+              user: { _id: user._id, fullname: user.fullname },
+            });
+          }
+          return res.status(200).json({
+            success: true,
+            message: out.replayed ? 'Member was already checked out (this request was already processed)' : 'Member checked out',
+            replayed: out.replayed,
+            data: out.attendance,
+          });
+        }
+
+        const inn = await memberAttendance.checkIn({
+          user,
+          now: new Date(),
+          memberType,
           notes: notes || 'Manually recorded by admin',
+          requestId,
+        });
+        await inn.attendance.populate('userId', 'fullname email phone');
+        if (!inn.replayed) {
+          socketUtil.emitToAdmins('stats:refresh');
+          socketUtil.emitToAdmins('attendance', {
+            type: 'checkin', subjectType: 'member', attendanceType: 'MEMBER',
+            attendance: { _id: inn.attendance._id, checkIn: inn.attendance.checkIn },
+            user: { _id: user._id, fullname: user.fullname },
+            data: inn.attendance,
+          });
+        }
+        return res.status(inn.replayed ? 200 : 201).json({
+          success: true,
+          message: inn.replayed ? 'Attendance was already recorded (this request was already processed)' : 'Attendance recorded',
+          replayed: inn.replayed,
+          ...(inn.warning ? { warning: inn.warning } : {}),
+          data: inn.attendance,
         });
       } catch (err) {
-        // Unique (userId, dayKey): a concurrent RFID tap just recorded today.
-        if (err && err.code === 11000) {
-          return res.status(409).json({ success: false, message: `${user.fullname} is already checked in` });
+        if (err.statusCode && err.statusCode < 500) {
+          return res.status(err.statusCode).json({ success: false, message: err.message, errorType: err.errorType });
         }
         throw err;
       }
-      await attendance.populate('userId', 'fullname email phone');
-
-      // Session deduction (Group 3): a genuine new check-in on a real member
-      // account. No-ops for a Day Pass plan or a member with no subscription
-      // on file — see subscriptionService.recordAttendanceSession.
-      await subscriptionService.recordAttendanceSession(user._id);
-
-      socketUtil.emitToAdmins('stats:refresh');
-      socketUtil.emitToAdmins('attendance', {
-        type: 'checkin', subjectType: 'member', attendanceType: 'MEMBER',
-        attendance: { _id: attendance._id, checkIn: attendance.checkIn },
-        user: { _id: user._id, fullname: user.fullname },
-        data: attendance,
-      });
-      return res.status(201).json({ success: true, message: 'Attendance recorded', data: attendance });
     }
 
     // ---- Walk-in guest (no account, no pass) --------------------------------

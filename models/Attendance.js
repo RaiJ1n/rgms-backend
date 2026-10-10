@@ -29,12 +29,20 @@ const attendanceSchema = new mongoose.Schema({
   // because the analytics "Non-member" bucket is built on it. Old documents
   // have no attendanceType; readers use resolveAttendanceType() as fallback.
   attendanceType: { type: String, enum: ['MEMBER', 'VISITOR', 'EMPLOYEE', 'GUEST'] },
-  // Manila-local 'YYYY-MM-DD' of the check-in. Written for MEMBER rows only and
-  // backed by a partial unique index (below) so two concurrent taps - on the
-  // same card or on a member's original + temporary card - cannot create two
-  // attendance rows (and two session deductions) for one member on one day.
-  // Rows written before this field existed simply have no dayKey.
+  // Manila-local 'YYYY-MM-DD' of the check-in (reporting/grouping label). A
+  // member may have SEVERAL sessions per day; this is NOT unique.
   dayKey: { type: String },
+  // true while a MEMBER session is open (Time-In done, Time-Out pending), unset
+  // once closed. A partial unique index on { userId } where openSession is true
+  // is what makes "at most one open session per member" a database guarantee.
+  openSession: { type: Boolean },
+  // Set when a session from an earlier day was never timed out and was retired
+  // so it would not block the member. Its checkOut stays empty (never invented).
+  missedCheckOut: { type: Boolean },
+  // Idempotency keys: a retried request with the same key returns the original
+  // result instead of creating/closing a second time.
+  requestId: { type: String },
+  checkOutRequestId: { type: String },
 
   rfidCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'RFIDCard' },
   memberType: { type: String, enum: ['Regular', 'Student'], default: 'Regular' },
@@ -55,9 +63,15 @@ attendanceSchema.statics.resolveType = function (doc, card) {
 };
 
 attendanceSchema.index({ rfidCardId: 1, createdAt: -1 });
+// At most ONE open session per member, at the database level.
 attendanceSchema.index(
-  { userId: 1, dayKey: 1 },
-  { unique: true, partialFilterExpression: { attendanceType: 'MEMBER', dayKey: { $type: 'string' } } },
+  { userId: 1 },
+  { unique: true, partialFilterExpression: { openSession: true }, name: 'one_open_session_per_member' },
 );
+// Member history lookups (all sessions, newest first).
+attendanceSchema.index({ userId: 1, checkIn: -1 });
+// Idempotency keys (partial: rows without a key are not indexed).
+attendanceSchema.index({ requestId: 1 }, { unique: true, partialFilterExpression: { requestId: { $type: 'string' } }, name: 'attendance_request_id' });
+attendanceSchema.index({ checkOutRequestId: 1 }, { unique: true, partialFilterExpression: { checkOutRequestId: { $type: 'string' } }, name: 'attendance_checkout_request_id' });
 
 module.exports = mongoose.model('Attendance', attendanceSchema);

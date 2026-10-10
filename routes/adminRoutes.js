@@ -169,6 +169,7 @@ router.post(
     body('userId').optional().isMongoId().withMessage('Invalid member selected'),
     body('visitorPassId').optional().isMongoId().withMessage('Invalid visitor pass selected'),
     body('action').optional().isIn(['checkin', 'checkout']).withMessage('Action must be checkin or checkout'),
+    body('requestId').optional().isString().matches(/^[A-Za-z0-9_.:-]{8,100}$/).withMessage('Invalid requestId'),
     body('guestName').optional().isString().trim().notEmpty().withMessage('Enter a name'),
     body('memberType').optional().isIn(['Regular', 'Student']).withMessage('Type must be Regular or Student'),
     body('notes').optional().isString().trim(),

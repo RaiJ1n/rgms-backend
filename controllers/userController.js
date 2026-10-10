@@ -538,7 +538,9 @@ const getDashboardSummary = async (req, res, next) => {
           : null,
         activeStreakWeeks: streakWeeks,
         monthlyAttendance, // 12-entry array, index 0 = January
+        // Every session, newest first - several rows may share one date.
         recentVisits: recentVisits.map((a) => ({
+          _id: a._id,
           checkIn: a.checkIn,
           checkOut: a.checkOut,
         })),

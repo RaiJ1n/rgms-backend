@@ -70,7 +70,17 @@ exports.summary = async (req, res, next) => {
     // into the wrong day for this stat specifically.
     const todayStart = startOfLocalDay();
     const todayEnd = endOfLocalDay();
-    const dailyAttendance = await Attendance.countDocuments({ createdAt: { $gte: todayStart, $lte: todayEnd } });
+    // "Today's visitors" is a headcount: a member who timed in twice today is
+    // ONE visitor (members can now have several sessions a day). Rows without
+    // a person (visitor pass / walk-in) each count once, as before.
+    const todayMatch = { createdAt: { $gte: todayStart, $lte: todayEnd } };
+    const [headcount] = await Attendance.aggregate([
+      { $match: todayMatch },
+      { $group: { _id: { $ifNull: ['$userId', { $ifNull: ['$coachId', '$_id'] }] } } },
+      { $count: 'n' },
+    ]);
+    const dailyAttendance = headcount ? headcount.n : 0;
+    const dailySessions = await Attendance.countDocuments(todayMatch); // every Time-In row
 
     // Most popular plan
     const popular = await Subscription.aggregate([
@@ -109,6 +119,7 @@ exports.summary = async (req, res, next) => {
       activeCount,
       expiredCount,
       dailyAttendance,
+      dailySessions,
       mostPopularPlan: popular[0] || null,
       topMembers,
       topPlans,
