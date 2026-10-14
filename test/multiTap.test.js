@@ -99,13 +99,13 @@ test.beforeEach(() => {
 });
 
 // --------------------------------------------------- the headline scenario
-test('config: debounce window is configurable and defaults to a short sliding window (not a long cooldown)', () => {
+test('config: the per-card window is 5 s by default, configurable, and never a daily limit', () => {
   assert.equal(scanConfig.debounceMs, WINDOW);
   delete process.env.RFID_DEBOUNCE_MS;
-  assert.equal(scanConfig.debounceMs, 1500);
+  assert.equal(scanConfig.debounceMs, 5000);
   assert.ok(scanConfig.debounceMs < 10000, 'far below the old 10 s cooldown');
   process.env.RFID_DEBOUNCE_MS = 'garbage';
-  assert.equal(scanConfig.debounceMs, 1500, 'invalid value falls back to the default');
+  assert.equal(scanConfig.debounceMs, 5000, 'invalid value falls back to the default');
   process.env.RFID_DEBOUNCE_MS = String(WINDOW);
 });
 
