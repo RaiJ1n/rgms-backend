@@ -128,7 +128,7 @@ socketUtil.emitToAdmins = () => {}; socketUtil.emitToUser = () => {};
 const scanErrors = [];
 const subscriptionService = require('../services/subscriptionService');
 const deductions = [];
-subscriptionService.recordAttendanceSession = async (userId) => { deductions.push(String(userId)); };
+subscriptionService.recordAttendanceSession = async (userId, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(userId)); return { deducted: true }; }; // mimics the real service for a repeat session
 
 const attendanceService = require('../services/attendanceService');
 const tempCardService = require('../services/tempCardService');
