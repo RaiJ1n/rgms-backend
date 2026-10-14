@@ -65,7 +65,7 @@ function scanRequestId(scanId) {
 // window is measured between SIGNALS, not between actions, so deliberate taps
 // 1.5 s (default) apart are never delayed by a leftover cooldown.
 async function claimSignal(card, now) {
-  const windowMs = scanConfig.debounceMs;
+  const windowMs = scanConfig.effectiveDebounceMs;
   if (windowMs <= 0) return true;
   const cutoff = new Date(now.getTime() - windowMs);
   const claimed = await RFIDCard.findOneAndUpdate(
