@@ -127,13 +127,17 @@ test('bridge: when every attempt fails the member sees a clear error, and the NE
   assert.ok(r.writes.some((w) => w.startsWith('WELCOME')), 'recovered on the next tap');
 });
 
-test('bridge: a duplicate the server marks silent leaves the LCD alone', async () => {
+test('bridge: a duplicate the server rejects is SHOWN (DUPLICATE / SCAN IGNORED), so the sketch is not left on "Reading card..."', async () => {
+  // The sketch shows "Reading card..." for every read it sends and waits for ANY
+  // reply; with no reply it falls back to "BRIDGE OFFLINE" after 15 s, which
+  // would be a false error. So a duplicate verdict must reach the LCD.
   const r = await runScenario({
     script: [[0, 'A1B2C3D4']],
     handler: () => ({ status: 429, body: { success: false, duplicate: true, silent: true, lcd: { line1: 'DUPLICATE', line2: 'SCAN IGNORED' } } }),
   });
   assert.equal(r.posts.length, 1);
-  assert.ok(!r.writes.some((w) => /DUPLICATE/.test(w)));
+  assert.equal(r.writes.filter((w) => w === 'DUPLICATE|SCAN IGNORED').length, 1, 'exactly one reply to the waiting screen');
+  assert.ok(!r.writes.some((w) => /WELCOME|GOODBYE|TIME IN|TIME OUT/.test(w)), 'a rejected tap never shows a success message');
 });
 
 test('bridge: a different card tapped right after is its own tap (debounce is per card)', async () => {

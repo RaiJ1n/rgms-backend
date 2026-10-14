@@ -35,8 +35,13 @@
 //   BRIDGE_DEBUG=1    print every raw serial line WITH the gap (ms) since the
 //                     previous signal for the same card - use it to measure your
 //                     reader (see RFID_MULTI_TAP.md)
-//   RFID_DEBOUNCE_MS  default 1500 - sliding "same physical tap" window; keep it
-//                     equal to the backend value. 0 disables.
+//   RFID_DEBOUNCE_MS  default 1500 - sliding "same physical tap" window. Keep it
+//                     SHORT (at or below the sketch's cooldown): the Arduino
+//                     sketch already blocks repeats of one card for 5 s and the
+//                     server enforces its own 5 s window, so this only collapses
+//                     rapid repeats. Do NOT raise it to 5000 - at the exact 5 s
+//                     boundary it could swallow a legitimate tap and leave the
+//                     LCD on "Reading card...". 0 disables.
 //   BRIDGE_QUEUE_MAX  default 10   - taps waiting for the server before new ones
 //                     are refused with BUSY (taps are queued, never dropped)
 //   BRIDGE_SCAN_ATTEMPTS default 2 - tries per tap on network/5xx failure; every
@@ -77,7 +82,7 @@ const PREFERRED_PORT = process.env.SERIAL_PORT || null;
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 8000);
 const DEBUG = process.env.BRIDGE_DEBUG === '1';
 const BRIDGE_ID = process.env.BRIDGE_ID || os.hostname();
-const BRIDGE_VERSION = '2.1';
+const BRIDGE_VERSION = '2.2';
 const envInt = (name, fallback, min, max) => {
   const n = Number(process.env[name]);
   return Number.isFinite(n) && process.env[name] !== '' && process.env[name] !== undefined
@@ -385,11 +390,13 @@ async function sendTap(tap) {
       return;
     }
 
-    // The server says this was only the reader repeating a tap it already
-    // handled: leave the display alone.
+    // The server says this was a repeat of a tap it already handled. The sketch
+    // only sends a read after its own 5 s cooldown and shows "Reading card..."
+    // the moment it does, so a reply that arrives here is ALWAYS for a screen
+    // that is waiting. Say so (DUPLICATE / SCAN IGNORED) instead of staying
+    // silent, otherwise the sketch waits 15 s and reports "BRIDGE OFFLINE".
     if (body.silent) {
-      log(`Server ignored a repeated signal for ${uid} (display left unchanged)`);
-      return;
+      log(`Server ignored a repeated signal for ${uid} (duplicate; telling the LCD)`);
     }
 
     const lcd = body.lcd;
