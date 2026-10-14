@@ -38,7 +38,7 @@ cardLookup.findByUid = (uid) => ({
 const socketUtil = require('../utils/socket');
 socketUtil.emitToAdmins = () => {}; socketUtil.emitToUser = () => {};
 const deductions = [];
-require('../services/subscriptionService').recordAttendanceSession = async (id) => { deductions.push(String(id)); };
+require('../services/subscriptionService').recordAttendanceSession = async (id, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(id)); return { deducted: true }; }; // mimics the real service for a repeat session
 
 const attendanceService = require('../services/attendanceService');
 const memberAttendance = require('../services/memberAttendanceService');

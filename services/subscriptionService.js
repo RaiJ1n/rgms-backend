@@ -2,6 +2,7 @@ const Subscription = require('../models/Subscription');
 const MembershipPlan = require('../models/MembershipPlan');
 const Payment = require('../models/Payment');
 const socketUtil = require('../utils/socket');
+const { formatLocalDateLabel } = require('../utils/localDate');
 
 // durationValue/durationUnit replace the old string-matched `duration`
 // field ("Daily Pass", "Annual Membership", ...) for date math. Any plan
@@ -223,26 +224,72 @@ const getMySubscription = async (userId) => {
 // the plan later doesn't silently break this check.
 const isDayPassPlan = (plan) => plan?.durationValue === 1 && plan?.durationUnit === 'day';
 
-// Deducts one membership/session from the member's current subscription.
-// Called from exactly two places, per the spec: attendanceService.js's
-// processMemberScan (an RFID tap that opens a NEW attendance record —
-// i.e. a check-in, not a check-out) and adminController.js's
-// createManualAttendance (an admin manually adding a member to
-// attendance). A Day Pass plan is deliberately left untouched — nothing
-// to track for a single-visit pass. Silently no-ops (rather than
-// throwing) if the member has no subscription at all, since callers of
-// this are logging attendance either way and a missing/lapsed
-// subscription shouldn't block that — same "attendance still gets
-// recorded" behavior createManualAttendance already had before session
-// tracking existed.
-const recordAttendanceSession = async (userId) => {
-  const subscription = await Subscription.findOne({ userId }).sort({ endDate: -1 }).populate('planId');
-  if (!subscription) return null;
-  if (isDayPassPlan(subscription.planId)) return subscription;
+// Deducts one membership/session from the member's current subscription -
+// AT MOST ONCE PER MANILA DAY, atomically.
+//
+// Policy (unchanged): a "session" is a gym DAY, so the first eligible member
+// check-in of a Manila day costs one; further check-ins that day cost nothing.
+// Day Pass plans are never touched. The subscription is still chosen by the
+// existing rule (latest endDate). Callers: memberAttendanceService.doCheckIn,
+// which serves both the RFID tap and the admin manual-attendance endpoint.
+//
+// How "once per day" is enforced: ONE conditional update on the subscription,
+//   { _id, lastDeductedDayKey: { $ne: dayKey } }  ->  $inc sessionsUsed,
+//                                                      $set lastDeductedDayKey
+// $ne also matches a document where the field does not exist yet, so legacy
+// subscriptions need no migration. Two concurrent first-of-day requests cannot
+// both match: the loser gets null and deducts nothing. The marker is written in
+// the same update as the increment, so it is set only when a deduction really
+// happened, and a failed attempt can simply be retried by the next check-in.
+//
+// opts.dayKey      'YYYY-MM-DD' Manila day of the attendance (default: today).
+// opts.firstOfDay  false when the caller already knows this is NOT the member's
+//                  first session today. For a LEGACY subscription (marker never
+//                  written but sessionsUsed > 0) that means "an earlier session
+//                  today was already charged by the old code" - without this
+//                  guard the deploy day could charge such a member twice. For a
+//                  subscription that has a marker, or has never been charged, it
+//                  changes nothing: the deduction is still attempted.
+//
+// Returns { deducted, reason, subscription? }. reason is one of: deducted,
+// no_subscription, day_pass, already_deducted, legacy_assumed_deducted,
+// subscription_missing, unexpected_no_match. Database errors are THROWN (never
+// reported as a deduction) so the caller can warn staff.
+const recordAttendanceSession = async (userId, opts = {}) => {
+  const dayKey = opts.dayKey || formatLocalDateLabel(new Date());
+  const firstOfDay = opts.firstOfDay !== false;
 
-  subscription.sessionsUsed = (subscription.sessionsUsed || 0) + 1;
-  await subscription.save();
-  return subscription;
+  const subscription = await Subscription.findOne({ userId }).sort({ endDate: -1 }).populate('planId');
+  if (!subscription) return { deducted: false, reason: 'no_subscription' };
+  if (isDayPassPlan(subscription.planId)) return { deducted: false, reason: 'day_pass', subscription };
+
+  const filter = { _id: subscription._id, lastDeductedDayKey: { $ne: dayKey } };
+  if (!firstOfDay) {
+    filter.$or = [
+      { lastDeductedDayKey: { $exists: true } },
+      { sessionsUsed: { $exists: false } },
+      { sessionsUsed: { $lte: 0 } },
+    ];
+  }
+  const updated = await Subscription.findOneAndUpdate(
+    filter,
+    { $inc: { sessionsUsed: 1 }, $set: { lastDeductedDayKey: dayKey } },
+    { new: true },
+  );
+  if (updated) return { deducted: true, reason: 'deducted', subscription: updated };
+
+  // Nothing matched. Work out why instead of guessing.
+  const current = await Subscription.findById(subscription._id).select('lastDeductedDayKey sessionsUsed');
+  if (!current) {
+    console.error('[SUBSCRIPTION] deduction skipped: subscription disappeared', { userId: String(userId), subscriptionId: String(subscription._id) });
+    return { deducted: false, reason: 'subscription_missing' };
+  }
+  if (current.lastDeductedDayKey === dayKey) return { deducted: false, reason: 'already_deducted' };
+  if (!firstOfDay && (current.lastDeductedDayKey === undefined || current.lastDeductedDayKey === null)) {
+    return { deducted: false, reason: 'legacy_assumed_deducted' };
+  }
+  console.error('[SUBSCRIPTION] deduction matched nothing for an unexpected reason', { userId: String(userId), subscriptionId: String(subscription._id), dayKey, marker: current.lastDeductedDayKey });
+  return { deducted: false, reason: 'unexpected_no_match' };
 };
 
 module.exports = {

@@ -41,6 +41,12 @@ const subscriptionSchema = new mongoose.Schema({
   // plan is worth.
   sessionsUsed: { type: Number, default: 0 },
 
+  // Manila 'YYYY-MM-DD' of the last day a session was deducted. Written in the
+  // SAME atomic update that increments sessionsUsed (subscriptionService.
+  // recordAttendanceSession), so a day can be charged at most once. Deliberately
+  // no default: legacy documents simply lack it and the first deduction works.
+  lastDeductedDayKey: { type: String },
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('Subscription', subscriptionSchema);

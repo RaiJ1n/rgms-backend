@@ -17,7 +17,8 @@
 //     the original result instead of repeating the action.
 //   * A subscription "session" is a gym DAY (the dashboard derives the total
 //     from the plan's day span), so only the FIRST Time-In of a Manila day
-//     deducts one. Further Time-Ins the same day deduct nothing.
+//     deducts one. Further Time-Ins the same day deduct nothing (enforced by
+//     an atomic once-per-day marker on the subscription, lastDeductedDayKey).
 //   * Timestamps are the server's clock (`now`), never the client's.
 //   * Every action for one member runs through a per-member FIFO lock, so
 //     taps/requests for the same member are applied in the order they were
@@ -118,24 +119,26 @@ async function doCheckIn({ user, now = new Date(), rfidCardId, memberType, notes
     throw err;
   }
 
-  // First Time-In of the Manila day deducts one subscription session; later
-  // Time-Ins the same day do not. Counting AFTER the insert is race-safe: a
-  // second session can only exist after the first row does.
+  // One subscription session per member per Manila day. The deduction is
+  // attempted on EVERY Time-In and is idempotent (an atomic conditional update
+  // on the subscription, see subscriptionService.recordAttendanceSession), so
+  // a later session that day retries a deduction that failed earlier, and a
+  // concurrent or replayed request can never charge twice. `firstOfDay` only
+  // protects legacy subscriptions on the deploy day. Visitors never come here.
   let deducted = false;
   let warning;
+  const dayKey = formatLocalDateLabel(now);
   const sessionsToday = await Attendance.countDocuments({
     userId, subjectType: 'member', createdAt: { $gte: startOfLocalDay(now) },
   });
-  if (sessionsToday === 1) {
-    try {
-      await subscriptionService.recordAttendanceSession(userId);
-      deducted = true;
-    } catch (err) {
-      // The attendance row IS saved; do not report a failed save. Surface it
-      // for staff and keep the evidence in the server log.
-      console.error('[ATTENDANCE] session deduction failed after check-in', { userId: String(userId), attendanceId: String(attendance._id), error: err.message });
-      warning = 'Attendance saved, but the subscription session could not be updated. Please tell the admin.';
-    }
+  try {
+    const result = await subscriptionService.recordAttendanceSession(userId, { dayKey, firstOfDay: sessionsToday <= 1 });
+    deducted = !!(result && result.deducted);
+  } catch (err) {
+    // The attendance row IS saved; do not report a failed save, and do NOT
+    // claim a deduction. The next check-in today will retry it.
+    console.error('[ATTENDANCE] session deduction failed after check-in', { userId: String(userId), attendanceId: String(attendance._id), error: err.message });
+    warning = 'Attendance saved, but the subscription session could not be updated. Please tell the admin.';
   }
   return { attendance, action: 'checkin', replayed: false, deducted, warning };
 }

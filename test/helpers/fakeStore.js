@@ -35,6 +35,7 @@ function matches(doc, filter) {
   });
 }
 function applyUpdate(doc, update) {
+  Object.entries(update.$inc || {}).forEach(([k, v]) => { doc[k] = (doc[k] || 0) + v; });
   Object.entries(update.$set || {}).forEach(([k, v]) => { doc[k] = v; });
   Object.keys(update.$unset || {}).forEach((k) => { delete doc[k]; });
 }

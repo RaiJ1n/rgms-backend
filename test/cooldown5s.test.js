@@ -38,7 +38,7 @@ const emitted = [];
 socketUtil.emitToAdmins = (ev, payload) => { emitted.push([ev, payload]); };
 socketUtil.emitToUser = () => {};
 const deductions = [];
-require('../services/subscriptionService').recordAttendanceSession = async (id) => { deductions.push(String(id)); };
+require('../services/subscriptionService').recordAttendanceSession = async (id, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(id)); return { deducted: true }; }; // mimics the real service for a repeat session
 
 const attendanceService = require('../services/attendanceService');
 const rfidController = require('../controllers/rfidController');
