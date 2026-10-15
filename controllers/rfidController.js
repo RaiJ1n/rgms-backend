@@ -480,9 +480,9 @@ exports.getLogs = async (req, res, next) => {
   }
 };
 
-// Streams EVERY attendance session matching the table's filters (not just one
-// page) as .xlsx. Rows are read through a cursor in batches of 500, so memory
-// stays flat. Above ATTENDANCE_EXPORT_MAX it refuses instead of truncating.
+// Exports EVERY attendance session matching the table's filters (not just one
+// page) as .xlsx. Rows are read through a cursor in batches of 500. Above
+// ATTENDANCE_EXPORT_MAX it refuses instead of truncating.
 const ATTENDANCE_EXPORT_MAX = 50000;
 exports.exportLogs = async (req, res, next) => {
   try {
@@ -502,16 +502,18 @@ exports.exportLogs = async (req, res, next) => {
 
     const dir = req.query.sort === 'asc' ? 1 : -1;
     const filename = attendanceExport.fileName(req.query.startDate, req.query.endDate);
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Cache-Control', 'no-store');
 
-    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res, useStyles: true });
+    // Built with the regular (buffered) ExcelJS Workbook - the same approach as
+    // Payment History's export. ExcelJS's streaming WorkbookWriter (exceljs 3.x
+    // + archiver 4) wrote every workbook part except the sheet as 0 bytes,
+    // which is what made Excel report the file as corrupt. Buffering also means
+    // any failure happens BEFORE headers are sent, so an error is a real JSON
+    // response and never a half-written .xlsx.
+    const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Attendance', { views: [{ state: 'frozen', ySplit: 1 }] });
     sheet.columns = attendanceExport.COLUMNS.map((c) => ({ width: c.width }));
     const head = sheet.addRow(attendanceExport.COLUMNS.map((c) => c.header));
     head.font = { bold: true };
-    head.commit();
 
     // Only names are populated: no email/phone/card data ever reaches the file.
     const cursor = Attendance.find(built.filter)
@@ -526,7 +528,7 @@ exports.exportLogs = async (req, res, next) => {
     const flush = async () => {
       if (!chunk.length) return;
       const rows = await history.decorate(chunk);
-      for (const r of rows) sheet.addRow(attendanceExport.toValues(r)).commit();
+      for (const r of rows) sheet.addRow(attendanceExport.toValues(r));
       chunk = [];
     };
     for await (const doc of cursor) {
@@ -534,10 +536,14 @@ exports.exportLogs = async (req, res, next) => {
       if (chunk.length >= 500) await flush();
     }
     await flush();
-    await sheet.commit();
-    await workbook.commit();
+
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(buffer);
   } catch (err) {
-    // Once the file has started streaming, a JSON error is impossible.
     if (res.headersSent) return res.destroy(err);
     next(err);
   }
