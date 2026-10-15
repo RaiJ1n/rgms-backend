@@ -14,6 +14,9 @@ const escapeRegex = require('../utils/escapeRegex');
 const visitorPassService = require('../services/visitorPassService');
 const scanDedup = require('../services/scanDedup');
 const history = require('../services/attendanceHistoryService');
+const attendanceQuery = require('../services/attendanceQueryService');
+const ExcelJS = require('exceljs');
+const attendanceExport = require('../utils/attendanceExportRows');
 
 exports.registerCard = async (req, res, next) => {
   try {
@@ -438,31 +441,11 @@ function withAttendanceType(doc) {
 
 exports.getLogs = async (req, res, next) => {
   try {
-    const { startDate, endDate, search, status } = req.query;
-
     // Every attendance SESSION is one row - this never groups by member/day.
-    const filter = {};
-    const df = history.dateFilter(startDate, endDate);
-    if (!df.ok) return res.status(400).json({ success: false, message: df.message });
-    if (df.range) filter.createdAt = df.range;
-
-    if (status === 'inside') Object.assign(filter, history.insideFilter());
-    if (status === 'completed') filter.checkOut = { $exists: true };
-
-    // Name search across members, coaches and walk-in / visitor names.
-    const term = typeof search === 'string' ? search.trim().slice(0, 80) : '';
-    if (term) {
-      const rx = new RegExp(escapeRegex(term), 'i');
-      const [users, coaches] = await Promise.all([
-        User.find({ fullname: rx }).select('_id').limit(500).lean(),
-        Coach.find({ fullname: rx }).select('_id').limit(500).lean(),
-      ]);
-      filter.$or = [
-        { userId: { $in: users.map((u) => u._id) } },
-        { coachId: { $in: coaches.map((c) => c._id) } },
-        { guestName: rx },
-      ];
-    }
+    // Filter building is shared with the Excel export (attendanceQueryService).
+    const built = await attendanceQuery.buildLogFilter(req.query);
+    if (!built.ok) return res.status(400).json({ success: false, message: built.message });
+    const filter = built.filter;
 
     // Pagination (default 50 kept for existing callers)
     const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -493,6 +476,69 @@ exports.getLogs = async (req, res, next) => {
       },
     });
   } catch (err) {
+    next(err);
+  }
+};
+
+// Streams EVERY attendance session matching the table's filters (not just one
+// page) as .xlsx. Rows are read through a cursor in batches of 500, so memory
+// stays flat. Above ATTENDANCE_EXPORT_MAX it refuses instead of truncating.
+const ATTENDANCE_EXPORT_MAX = 50000;
+exports.exportLogs = async (req, res, next) => {
+  try {
+    const built = await attendanceQuery.buildLogFilter(req.query);
+    if (!built.ok) return res.status(400).json({ success: false, message: built.message });
+
+    const total = await Attendance.countDocuments(built.filter);
+    if (total === 0) {
+      return res.status(404).json({ success: false, message: 'No attendance records found for the selected filters.' });
+    }
+    if (total > ATTENDANCE_EXPORT_MAX) {
+      return res.status(413).json({
+        success: false,
+        message: `${total} records match - the export limit is ${ATTENDANCE_EXPORT_MAX}. Narrow the date range and try again.`,
+      });
+    }
+
+    const dir = req.query.sort === 'asc' ? 1 : -1;
+    const filename = attendanceExport.fileName(req.query.startDate, req.query.endDate);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res, useStyles: true });
+    const sheet = workbook.addWorksheet('Attendance', { views: [{ state: 'frozen', ySplit: 1 }] });
+    sheet.columns = attendanceExport.COLUMNS.map((c) => ({ width: c.width }));
+    const head = sheet.addRow(attendanceExport.COLUMNS.map((c) => c.header));
+    head.font = { bold: true };
+    head.commit();
+
+    // Only names are populated: no email/phone/card data ever reaches the file.
+    const cursor = Attendance.find(built.filter)
+      .populate('userId', 'fullname')
+      .populate('coachId', 'fullname')
+      .populate('rfidCardId', 'cardType')
+      .sort({ createdAt: dir, _id: dir })
+      .lean()
+      .cursor({ batchSize: 500 });
+
+    let chunk = [];
+    const flush = async () => {
+      if (!chunk.length) return;
+      const rows = await history.decorate(chunk);
+      for (const r of rows) sheet.addRow(attendanceExport.toValues(r)).commit();
+      chunk = [];
+    };
+    for await (const doc of cursor) {
+      chunk.push({ ...doc, attendanceType: Attendance.resolveType(doc, doc.rfidCardId) });
+      if (chunk.length >= 500) await flush();
+    }
+    await flush();
+    await sheet.commit();
+    await workbook.commit();
+  } catch (err) {
+    // Once the file has started streaming, a JSON error is impossible.
+    if (res.headersSent) return res.destroy(err);
     next(err);
   }
 };

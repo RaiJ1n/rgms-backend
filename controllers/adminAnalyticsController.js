@@ -4,7 +4,8 @@ const Subscription = require('../models/Subscription');
 const MembershipPlan = require('../models/MembershipPlan');
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
-const { startOfLocalDay, endOfLocalDay, startOfLocalWeek, startOfLocalMonth, startOfLocalYear } = require('../utils/localDate');
+const attendanceAnalytics = require('../services/attendanceAnalytics');
+const { startOfLocalDay, endOfLocalDay, startOfLocalWeek, startOfLocalMonth, startOfLocalYear, formatLocalDateLabel } = require('../utils/localDate');
 
 // Helper to parse date range
 function parseRange(q) {
@@ -254,6 +255,36 @@ exports.visitorsBreakdown = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+};
+
+// Dashboard Attendance bar chart + donut. Counts DISTINCT registered members
+// (by userId) per day / ISO week / month in Asia/Manila - a member with several
+// sessions in one bucket counts once. Sessions are returned separately. Visitor
+// passes and walk-ins are reported as `nonMembers`, never as members; employees
+// are excluded. Read-only: no attendance row is touched. See
+// services/attendanceAnalytics.js for the rules and the pipelines.
+exports.attendanceUnique = async (req, res, next) => {
+  try {
+    const interval = attendanceAnalytics.INTERVALS.includes(req.query.interval) ? req.query.interval : 'day';
+    const range = attendanceAnalytics.resolveRange(interval, req.query.startDate, req.query.endDate);
+    if (!range.ok) return res.status(400).json({ success: false, message: range.message });
+
+    const [bucketRows, totalRows] = await Promise.all([
+      Attendance.aggregate(attendanceAnalytics.bucketsPipeline(interval, range.start, range.end)),
+      Attendance.aggregate(attendanceAnalytics.totalsPipeline(range.start, range.end)),
+    ]);
+    const list = attendanceAnalytics.listBuckets(interval, range.start, range.end);
+
+    res.json({
+      success: true,
+      interval,
+      timezone: attendanceAnalytics.TZ,
+      startDate: formatLocalDateLabel(range.start),
+      endDate: formatLocalDateLabel(range.end),
+      buckets: attendanceAnalytics.assembleBuckets(list, bucketRows),
+      totals: attendanceAnalytics.assembleTotals(totalRows),
+    });
+  } catch (err) { next(err); }
 };
 
 exports.incomeByPeriod = async (req, res, next) => {
