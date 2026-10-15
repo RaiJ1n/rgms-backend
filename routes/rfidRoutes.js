@@ -32,6 +32,10 @@ router.post('/register', rfidController.registerCard);
 // GET /api/rfid/logs?page=1&limit=50&startDate=2024-01-01&endDate=2024-01-31
 router.get('/logs', rfidController.getLogs);
 
+// Excel export of EVERY session matching the same filters as /logs.
+// GET /api/rfid/logs/export?startDate=&endDate=&search=&status=&sort=
+router.get('/logs/export', rfidController.exportLogs);
+
 // List registered RFID cards (member + employee), most recent first
 // GET /api/rfid/cards?limit=10
 router.get('/cards', rfidController.listCards);
