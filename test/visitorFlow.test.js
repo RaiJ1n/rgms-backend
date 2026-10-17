@@ -1,11 +1,3 @@
-// tests/visitorFlow.test.js — run with:  node --test tests/
-//
-// Exercises the visitor-pass lifecycle end to end (RFID tap -> attendance ->
-// pass status -> card availability -> re-issue) WITHOUT a database: the Mongoose
-// models are replaced by a tiny in-memory store that supports just the query
-// operators these code paths use ($or, $ne, $exists, $lt, $gte, null-match,
-// $set, $unset). It verifies the application logic; it does not prove real
-// MongoDB semantics, so run the manual checklist against staging as well.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -17,7 +9,7 @@ const Attendance = require('../models/Attendance');
 const AuditLog = require('../models/AuditLog');
 const cardLookup = require('../services/rfidCardLookup');
 
-// ---------------------------------------------------------------- fake store
+// Fake store
 let seq = 0;
 const nid = () => String(++seq).padStart(24, '0');
 const same = (a, b) => String(a) === String(b);
@@ -84,7 +76,7 @@ cardLookup.findByUid = (uid) => ({
   populate() { return this; },
   then(res, rej) { return Promise.resolve(cards.find((c) => c.cardId === uid) || null).then(res, rej); },
 });
-// Plain socket util: no io server in tests.
+// Plain socket util: no io server in tests
 const socketUtil = require('../utils/socket');
 socketUtil.emitToAdmins = () => {};
 socketUtil.emitToUser = () => {};
@@ -94,7 +86,7 @@ const passes = require('../services/visitorPassService');
 const rfid = require('../controllers/rfidController');
 const { startOfLocalDay, endOfLocalDay } = require('../utils/localDate');
 
-// --------------------------------------------------------------- test helpers
+// Test helpers
 const UID_A = 'A1B2C3D4';
 const UID_B = 'E5F6A7B8';
 const admin = { _id: 'admin1' };
@@ -104,8 +96,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const issue = async (cardId, visitorName) => { await sleep(3); return issueNow(cardId, visitorName); };
 const issueNow = (cardId, visitorName) => run((r) =>
   rfid.issueTemporaryCard({ body: { cardId, visitorName }, user: admin }, r, (e) => { throw e; }));
-// The 10s duplicate-scan guard is by design; move lastScannedAt back instead of sleeping.
-// Quiet reader: move the last-signal marker back past the debounce window instead of sleeping.
+// The 10s duplicate-scan guard is by design; move lastScannedAt back instead of sleeping
 const settle = () => cards.forEach((c) => { if (c.lastScannedAt) c.lastScannedAt = new Date(Date.now() - 60_000); if (c.lastSignalAt) c.lastSignalAt = new Date(Date.now() - 60_000); });
 const tap = async (uid) => { settle(); return attendanceService.processScan(uid); };
 const cardOf = (uid) => cards.find((c) => c.cardId === uid);
@@ -135,7 +126,6 @@ test('check-out -> CHECKED_OUT, attendance closed, card AVAILABLE (never reverts
   assert.equal(pass.cardAvailable, true);
   assert.ok(pass.checkedOutAt);
 
-  // Re-reading the list (refresh / re-login) gives the same answer.
   const list = await run((r) => rfid.listTemporaryCards({ query: {} }, r, (e) => { throw e; }));
   assert.equal(list.body.data[0].status, 'CHECKED_OUT');
 });
@@ -182,7 +172,7 @@ test('after checkout the same card can be assigned to the next visitor, who gets
 test('atomic claim: a second admin racing for a card that just got taken is refused', async () => {
   await issue(UID_A, 'Visitor A');
   await tap(UID_A);
-  await tap(UID_A); // available
+  await tap(UID_A);
   await sleep(3);
   const [x, y] = await Promise.all([issueNow(UID_A, 'Visitor B'), issueNow(UID_A, 'Visitor C')]);
   assert.deepEqual([x.code, y.code].sort(), [201, 409]);
@@ -191,7 +181,7 @@ test('atomic claim: a second admin racing for a card that just got taken is refu
 test('a visitor still inside can check out after validUntil; card is then released', async () => {
   await issue(UID_A, 'Ana');
   await tap(UID_A);
-  cardOf(UID_A).validUntil = new Date(Date.now() - 1000); // day rolled over while inside
+  cardOf(UID_A).validUntil = new Date(Date.now() - 1000);
   assert.equal(passes.passStatus(cardOf(UID_A)), 'EXPIRED');
   const out = await tap(UID_A);
   assert.equal(out.action, 'checkout');
@@ -217,12 +207,12 @@ test('self-heal: attendance closed but card write lost -> reconcile repairs the 
   await issue(UID_A, 'Ana');
   await tap(UID_A);
   const c = cardOf(UID_A);
-  attendance[0].checkOut = new Date();   // checkout happened...
-  delete c.checkedOutAt;                  // ...but the card write was lost
+  attendance[0].checkOut = new Date();
+  delete c.checkedOutAt;
   assert.equal(passes.passStatus(c), 'ACTIVE');
   await passes.reconcilePass(c);
   assert.equal(passes.passStatus(c), 'CHECKED_OUT');
-  assert.equal((await issue(UID_A, 'Visitor B')).code, 201); // and the issue path heals too
+  assert.equal((await issue(UID_A, 'Visitor B')).code, 201);
 });
 
 test('manual admin attendance for a visitor uses the same rules', async () => {

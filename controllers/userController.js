@@ -8,14 +8,7 @@ const authService = require('../services/authService');
 const emailService = require('../services/emailService');
 const passwordChangeOtpService = require('../services/passwordChangeOtpService');
 
-// Section D1: standalone acknowledge endpoint, for gated actions that
-// don't have a convenient body field of their own to carry the flag on
-// (student ID upload's file field is the whole request; the coach
-// registration questionnaire is a separate controller entirely). The
-// frontend calls this first, then retries the original action —
-// updateProfile/uploadProfilePhoto/uploadMedicalDocument above also
-// accept the flag inline in the same request as a shortcut, but this
-// endpoint is what actually flips the bit in all cases.
+// Standalone acknowledge endpoint
 const acknowledgePrivacyNotice = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id).select('-password');
@@ -64,33 +57,11 @@ const updateProfile = async (req, res, next) => {
 
     user.fullname = fullname;
 
-    // Section D1: phone/address are the "personal information" fields
-    // this page can change post-signup. Same accept-in-this-request-
-    // or-already-acknowledged pattern as medicalConsent below, and the
-    // same "reject the whole request rather than silently drop these
-    // two fields" reasoning — a member shouldn't see their phone/address
-    // save look successful when it was actually skipped.
-    // Section D1: compares against the STORED value, not just whether
-    // the field is present in the request — the frontend's
-    // buildProfilePayload() sends address/phone on every save
-    // regardless of whether they changed, so a presence-only check here
-    // would gate every single profile update (even just editing
-    // fullname) behind the privacy notice, not only ones that actually
-    // touch contact info.
+    // phone/address are the "personal information" fields this page can change post-signup
+    // Same accept-in-this-request- or-already-acknowledged pattern as medicalConsent below
     const contactFieldsTouched =
       (address !== undefined && address !== user.address) || (phone !== undefined && phone !== user.phone);
-    // Privacy Notice acknowledgment is a member (role 'user') consent
-    // flow — Section D1's whole point is gating what a MEMBER shares
-    // about themselves. This controller is reused for Admin's own
-    // profile (adminRoutes.js: PUT /admin/profile) since an admin is
-    // just a User document with role 'admin' — but an admin account is
-    // never shown the Privacy Notice modal and privacyNoticeAcknowledged
-    // defaults to false for every admin (it's never set at signup the
-    // way a member's is), so without this role check EVERY admin
-    // profile save that touched phone/address would 400 here, forever,
-    // with no way to clear it — exactly the "changes aren't saved"
-    // symptom reported. Same reasoning applies to the medical-fields
-    // gate and uploadProfilePhoto below.
+    // Privacy Notice acknowledgment is a member (role 'user') consent flow
     if (user.role === 'user' && contactFieldsTouched && !user.privacyNoticeAcknowledged && !privacyNoticeAcknowledged) {
       return res.status(400).json({
         success: false,
@@ -106,28 +77,13 @@ const updateProfile = async (req, res, next) => {
     if (age !== undefined) user.age = age;
     if (heightCm !== undefined) user.heightCm = heightCm;
     if (weightKg !== undefined) user.weightKg = weightKg;
-    // Section D2: needed for the Mifflin-St Jeor calorie calculation.
-    // checkFalsy in the route validator lets an empty string clear it
-    // back to unset, same convention as facebookUrl/instagramUrl below.
     if (sex !== undefined) user.sex = sex || undefined;
     if (calorieGoal !== undefined) user.calorieGoal = calorieGoal;
     if (phone !== undefined) user.phone = phone;
-    // Empty string clears the link (used by the "Disconnect" action on the
-    // frontend); a non-empty value is already URL-validated by the route.
     if (facebookUrl !== undefined) user.facebookUrl = facebookUrl.trim();
     if (instagramUrl !== undefined) user.instagramUrl = instagramUrl.trim();
-    // birthDate arrives as a 'YYYY-MM-DD' string from the frontend's
-    // <input type="date">; Mongoose casts it to the schema's Date type
-    // automatically, same as any other Date-typed field assignment here.
     if (birthDate !== undefined) user.birthDate = birthDate || null;
 
-    // Medical fields (Section H) — any of them arriving requires consent,
-    // either already on file from a previous save or given in this same
-    // request (medicalConsent: true in the body, from the profile form's
-    // checkbox). Without that, the whole request is rejected rather than
-    // silently dropping the medical fields and saving everything else —
-    // a partial save here could look to the member like their medical
-    // info was recorded when it wasn't.
     const medicalFieldsTouched = [medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes]
       .some((v) => v !== undefined);
     if (medicalFieldsTouched) {
@@ -177,7 +133,7 @@ const updateProfile = async (req, res, next) => {
       message: verificationSent
         ? 'Profile updated successfully. Please verify your new email address.'
         : 'Profile updated successfully.',
-      data: safeUser,   // full user object, matching frontend's res.data.data usage
+      data: safeUser,
     });
   } catch (error) {
     next(error);
@@ -191,11 +147,8 @@ const uploadProfilePhoto = async (req, res, next) => {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Section D1: multer parses non-file form fields into req.body same
-    // as a JSON request — 'true'/'false' arrive as strings here since
-    // this is multipart/form-data, not JSON, hence the explicit === check.
-    // Same admin exemption as updateProfile above — an admin never sees
-    // the Privacy Notice modal, so this gate must not apply to them.
+    // Multer parses non-file form fields into req.body same as a JSON request
+    // Same admin exemption as updateProfile above — an admin never sees the Privacy Notice modal
     if (user.role === 'user' && !user.privacyNoticeAcknowledged && req.body.privacyNoticeAcknowledged !== 'true') {
       return res.status(400).json({
         success: false,
@@ -222,10 +175,7 @@ const uploadProfilePhoto = async (req, res, next) => {
   }
 };
 
-// Fire-and-forget cleanup for the old medical document, mirroring
-// deleteCloudinaryImage() above but resource_type-aware since a medical
-// document can be a PDF (resource_type 'raw'/'image' depending on how
-// Cloudinary classified it at upload time) rather than always an image.
+// Fire-and-forget cleanup for the old medical document
 function deleteCloudinaryMedicalDocument(doc) {
   if (!doc?.public_id) return;
   cloudinary.uploader
@@ -243,24 +193,14 @@ const uploadMedicalDocument = async (req, res, next) => {
     const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Section D1/UI Spec §2: unlike every other privacyNoticeAcknowledged
-    // gate in this file, medical document upload deliberately does NOT
-    // accept "already acknowledged on the account" as sufficient — the
-    // spec calls this out by name: the confirmation must be shown again
-    // before every submission, even if the member accepted it during an
-    // earlier upload. So this check only ever looks at THIS request's
-    // body flag, never at user.privacyNoticeAcknowledged, unlike
-    // updateProfile/uploadProfilePhoto above.
+    // Section D1/UI Spec §2
     if (req.body.privacyNoticeAcknowledged !== 'true') {
       return res.status(400).json({
         success: false,
         message: 'Please acknowledge the Privacy Notice before uploading medical documents.',
       });
     }
-    // Still recorded on the account (same field Section D1 uses
-    // elsewhere) so other, one-time-only gates elsewhere in the app
-    // don't re-prompt unnecessarily — but recording it here never lets
-    // a *future* medical document upload skip the check above.
+    // Still recorded on the account (same field Section D1 uses elsewhere) so other
     if (!user.privacyNoticeAcknowledged) {
       user.privacyNoticeAcknowledged = true;
       user.privacyNoticeAcknowledgedAt = new Date();
@@ -276,8 +216,7 @@ const uploadMedicalDocument = async (req, res, next) => {
       uploadedAt: new Date(),
     }));
 
-    // Additive — a new batch is appended, never replaces what's already
-    // on file (see the medicalDocuments comment in User.js).
+    // Additive
     user.medicalDocuments.push(...newDocuments);
     await user.save();
 
@@ -295,11 +234,7 @@ const uploadMedicalDocument = async (req, res, next) => {
 };
 
 // Shared by the self-service view below and adminController.getMemberMedicalDocument
-// — same "mint a fresh signed URL, never persist/hand out a raw one"
-// approach for both, just called with a different owner's document.
-// Takes the medicalDocument sub-document (or null) and returns the
-// { url, fileName, fileType, uploadedAt } shape both callers respond
-// with, or null if there's nothing on file.
+// Shared by the self-service view below and adminController.getMemberMedicalDocument — same "mint a fresh signed URL
 function buildMedicalDocumentResponse(medicalDocument) {
   if (!medicalDocument?.public_id) return null;
 
@@ -310,25 +245,13 @@ function buildMedicalDocumentResponse(medicalDocument) {
     type: 'authenticated',
     sign_url: true,
     secure: true,
-    // NOTE: sign_url alone does not make this link expire — it just
-    // proves the URL was generated by someone holding the API secret,
-    // which is what keeps `authenticated`-type assets from being
-    // guessable/publicly listable. The URL is still valid indefinitely
-    // once generated. If time-boxed links are needed later, enable
-    // Cloudinary's "strict token authentication" and switch this to an
-    // auth_token with a `start_time`/`duration` instead.
+    // NOTE
   });
 
   return { url: signedUrl, fileName, fileType, uploadedAt };
 }
 
-// Returns a short-lived signed URL rather than ever persisting/handing out
-// a directly-usable link — see the comment on medicalDocuments in User.js
-// and on medicalDocumentStorage in uploadMiddleware.js. Owner-only here;
-// staff access goes through adminController.getMemberMedicalDocument
-// instead, which reuses buildMedicalDocumentResponse above rather than
-// this route being relaxed to accept an arbitrary member id. Scoped to
-// one document by :docId now that a member can have several on file.
+// Returns a short-lived signed URL rather than ever persisting/handing out a directly-usable link
 const viewMedicalDocument = async (req, res, next) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.docId)) {
@@ -361,7 +284,7 @@ const deleteMedicalDocument = async (req, res, next) => {
     }
 
     const oldDocument = { ...document.toObject() };
-    document.deleteOne(); // removes just this one subdocument from the array
+    document.deleteOne();
     await user.save();
 
     deleteCloudinaryMedicalDocument(oldDocument);
@@ -390,9 +313,7 @@ const getSocialAccounts = async (req, res, next) => {
   }
 };
 
-// Send/Resend the verification code to the member's own registered
-// email. Same OTP fields, cooldown and email template as Admin
-// Settings' "Send Code" flow — see passwordChangeOtpService.js.
+// Send/Resend the verification code to the member's own registered email
 const sendPasswordChangeOtp = async (req, res, next) => {
   try {
     const result = await passwordChangeOtpService.requestPasswordChangeOtp(req.user._id);
@@ -445,15 +366,14 @@ const getSubscriptions = async (req, res, next) => {
   }
 };
 
-// ---- Dashboard support ----
+// Dashboard support
 
-// ISO week key (Mon–Sun buckets) so "active streak" counts consecutive
-// weeks with at least one visit, regardless of which day the visit fell on.
+// ISO week key (Mon–Sun buckets) so "active streak" counts consecutive weeks with at least one visit
 const isoWeekKey = (input) => {
   const date = new Date(input);
   date.setHours(0, 0, 0, 0);
-  const dayNum = (date.getDay() + 6) % 7; // Monday = 0
-  date.setDate(date.getDate() - dayNum + 3); // move to Thursday of this week
+  const dayNum = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - dayNum + 3);
   const firstThursday = new Date(date.getFullYear(), 0, 4);
   const diff = date - firstThursday;
   const week = 1 + Math.round(diff / (7 * 24 * 3600 * 1000));
@@ -481,9 +401,7 @@ const getMonthlyAttendanceCounts = async (userId, year) => {
 
   const results = await Attendance.aggregate([
     { $match: { userId: new mongoose.Types.ObjectId(userId), checkIn: { $gte: start, $lte: end } } },
-    // One count per gym DAY (Manila), not per session: several Time-Ins on the
-    // same day are one visit for this chart (same rule as the subscription's
-    // "session" and the streak).
+    // One count per gym DAY (Manila), not per session
     { $group: { _id: { m: { $month: { date: '$checkIn', timezone: 'Asia/Manila' } }, d: { $dateToString: { format: '%Y-%m-%d', date: '$checkIn', timezone: 'Asia/Manila' } } } } },
     { $group: { _id: '$_id.m', count: { $sum: 1 } } },
   ]);
@@ -493,8 +411,7 @@ const getMonthlyAttendanceCounts = async (userId, year) => {
   return counts;
 };
 
-// Single combined endpoint for the member Dashboard so the page doesn't
-// have to fan out into 5 separate requests on load.
+// Single combined endpoint for the member Dashboard
 const getDashboardSummary = async (req, res, next) => {
   try {
     const userId = req.user._id;
@@ -503,8 +420,6 @@ const getDashboardSummary = async (req, res, next) => {
     const [rfidCard, subscription, activeRows, recentVisits, monthlyAttendance, streakWeeks] = await Promise.all([
       RFIDCard.findOne({ userId }),
       Subscription.findOne({ userId, status: 'active' }).sort({ endDate: -1 }).populate('planId'),
-      // All active windows, to show the continuous span (renewals are queued
-      // back-to-back, so the furthest row alone starts in the future).
       Subscription.find({ userId, status: 'active' }).select('startDate endDate'),
       Attendance.find({ userId }).sort({ checkIn: -1 }).limit(10),
       getMonthlyAttendanceCounts(userId, year),
@@ -531,18 +446,12 @@ const getDashboardSummary = async (req, res, next) => {
               planName: subscription.planId?.name || null,
               startDate: (require('../services/subscriptionService').getCoverageWindow(activeRows) || subscription).startDate,
               endDate: subscription.endDate,
-              // Session Remaining (Group 3): sessionsUsed is deducted by
-              // subscriptionService.recordAttendanceSession on RFID
-              // check-ins and manual attendance entries (never for a Day
-              // Pass plan). The frontend derives the total from the same
-              // start/end date span it already uses for the "X/Y days"
-              // progress bar, so this is the only extra figure it needs.
+              // Session Remaining (Group 3)
               sessionsUsed: subscription.sessionsUsed || 0,
             }
           : null,
         activeStreakWeeks: streakWeeks,
-        monthlyAttendance, // 12-entry array, index 0 = January
-        // Every session, newest first - several rows may share one date.
+        monthlyAttendance,
         recentVisits: recentVisits.map((a) => ({
           _id: a._id,
           checkIn: a.checkIn,
@@ -555,10 +464,7 @@ const getDashboardSummary = async (req, res, next) => {
   }
 };
 
-// Full attendance history for the signed-in member: EVERY session is its own
-// row (several may share one date), newest first by default. Read-only and
-// scoped to req.user - a member can only ever see their own sessions.
-// GET /users/attendance?page=1&limit=10&sort=desc|asc&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+// Full attendance history for the signed-in member: EVERY session is its own row
 const getAttendanceHistory = async (req, res, next) => {
   try {
     const history = require('../services/attendanceHistoryService');

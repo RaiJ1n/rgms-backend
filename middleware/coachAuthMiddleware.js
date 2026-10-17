@@ -24,9 +24,7 @@ const protectCoach = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const coach = await User.findById(decoded.id).select('-password');
 
-    // Reject even if the id resolves to a real user — a member or
-    // admin token must never grant access to coach-only routes just
-    // because the id happens to be valid.
+    // Reject even if the id resolves to a real user
     if (!coach || coach.role !== 'coach') {
       return res.status(401).json({ success: false, message: 'Not authorized, coach not found' });
     }

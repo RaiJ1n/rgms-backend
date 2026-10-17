@@ -1,19 +1,5 @@
 // services/attendanceAnalytics.js
-//
-// Unique-member attendance analytics. No database or Mongoose imports here, so
-// the bucketing rules can be unit-tested on their own.
-//
-// Rules (see also controllers/adminAnalyticsController.js#attendanceUnique):
-//   * A bucket is a Manila calendar day, ISO week (Mon-Sun) or calendar month.
-//   * Registered members are counted by their persistent `userId`, once per
-//     bucket, however many sessions they had. Temporary (spare) cards write the
-//     member's own userId on the session, so original and temp cards are the
-//     same identity. Names are never used.
-//   * Visitor passes / walk-ins have no userId. They are NEVER counted as
-//     members; each such row is reported separately as `nonMembers`.
-//   * Employee (coach) rows are excluded from both numbers.
-//   * `sessions` is the raw number of attendance rows (members only), reported
-//     alongside so the two metrics are never confused.
+// Rules (see also controllers/adminAnalyticsController.js#attendanceUnique): * A bucket is a Manila calendar day
 const {
   formatLocalDateLabel,
   startOfLocalDay,
@@ -33,13 +19,13 @@ function isoWeekKey(date) {
   const s = new Date(date.getTime() + OFFSET_MS);
   const d = new Date(Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate()));
   const dayNum = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() + 4 - dayNum); // Thursday of this ISO week
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   const week = Math.ceil(((d - yearStart) / DAY_MS + 1) / 7);
   return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
 }
 
-// Same key the Mongo pipeline produces ($dateToString with timezone).
+// Same key the Mongo pipeline produces ($dateToString with timezone)
 function bucketKey(date, interval) {
   const d = new Date(date);
   if (interval === 'week') return isoWeekKey(d);
@@ -58,7 +44,7 @@ function labelFor(date, interval) {
   return interval === 'week' ? `Wk of ${txt}` : txt;
 }
 
-// Every bucket in [start, end], in order, so empty periods show as 0.
+// Every bucket in [start, end], in order, so empty periods show as 0
 function listBuckets(interval, start, end) {
   const out = [];
   const seen = new Set();
@@ -83,7 +69,7 @@ function defaultStart(interval, now) {
   return startOfLocalDay(new Date(now.getTime() - 6 * DAY_MS));
 }
 
-// { ok, start, end } - defaults: 7 days / 8 weeks / 6 months ending today.
+// { ok, start, end } - defaults: 7 days / 8 weeks / 6 months ending today
 function resolveRange(interval, startStr, endStr, now = new Date()) {
   const r = parseRange(startStr || undefined, endStr || undefined);
   if (!r.ok) return r;
@@ -96,7 +82,7 @@ function resolveRange(interval, startStr, endStr, now = new Date()) {
   return { ok: true, start, end };
 }
 
-// ---- MongoDB pipelines -----------------------------------------------------
+// MongoDB pipelines
 const bucketExpr = (interval) => ({
   $dateToString: {
     format: interval === 'week' ? '%G-W%V' : interval === 'month' ? '%Y-%m' : '%Y-%m-%d',
@@ -105,7 +91,7 @@ const bucketExpr = (interval) => ({
   },
 });
 
-// People rows only: no employees. Visitors/walk-ins stay in (as non-members).
+// People rows only: no employees
 const baseMatch = (start, end) => ({
   createdAt: { $gte: start, $lte: end },
   coachId: null,
@@ -113,7 +99,7 @@ const baseMatch = (start, end) => ({
   attendanceType: { $ne: 'EMPLOYEE' },
 });
 const kindExpr = { $cond: [{ $ifNull: ['$userId', false] }, 'member', 'nonMember'] };
-// Members collapse to their userId; non-members have no identity so each row is its own "person".
+// Members collapse to their userId; non-members have no identity so each row is its own "person"
 const whoExpr = { $ifNull: ['$userId', '$_id'] };
 
 function bucketsPipeline(interval, start, end) {
@@ -124,7 +110,7 @@ function bucketsPipeline(interval, start, end) {
   ];
 }
 
-// Distinct across the WHOLE range (not the sum of buckets).
+// Distinct across the WHOLE range (not the sum of buckets)
 function totalsPipeline(start, end) {
   return [
     { $match: baseMatch(start, end) },
@@ -133,7 +119,7 @@ function totalsPipeline(start, end) {
   ];
 }
 
-// ---- Shaping results -------------------------------------------------------
+// Shaping results
 function assembleBuckets(list, rows) {
   const m = new Map(list.map((b) => [b.key, { ...b, uniqueMembers: 0, sessions: 0, nonMembers: 0 }]));
   for (const r of rows) {
@@ -154,7 +140,7 @@ function assembleTotals(rows) {
   return t;
 }
 
-// ---- Reference implementation (used by tests to mirror the pipeline) -------
+// Reference implementation (used by tests to mirror the pipeline)
 function inRange(row, start, end) {
   const t = new Date(row.createdAt).getTime();
   return t >= start.getTime() && t <= end.getTime();

@@ -9,9 +9,7 @@ const { MUSCLE_GROUPS } = require('../utils/muscleGroups');
 
 const router = express.Router();
 
-// Every route here is a coach viewing/managing their own data — nothing
-// admin-adjacent. Coach account management (create/edit/deactivate)
-// lives separately in coachController.js, mounted under adminRoutes.js.
+// Every route here is a coach viewing/managing their own data — nothing admin-adjacent
 router.use(protectCoach);
 
 router.get('/classes', coachPortalController.getMyClasses);
@@ -36,8 +34,7 @@ router.put(
 );
 router.put('/profile/photo', upload.single('photo'), coachPortalController.uploadMyProfilePhoto);
 
-// Settings (Section 1) — notification email + password, separate from
-// Personal Information above.
+// Settings (Section 1)
 router.get('/settings', coachPortalController.getMySettings);
 router.post('/settings/notification-email/send-otp', coachPortalController.sendNotificationEmailOtp);
 router.put(
@@ -67,16 +64,12 @@ router.get('/requests', coachPortalController.getMyRequests);
 router.put('/requests/:id/accept', coachPortalController.acceptRequest);
 router.put('/requests/:id/reject', coachPortalController.rejectRequest);
 router.get('/clients', coachPortalController.getMyClients);
-// Client Details (Section 4) — one specific client's own coach viewing
-// their profile/medical info/medical documents. Both routes re-verify
-// the coach-client relationship server-side on every request (see
-// coachPortalController.assertAcceptedClient) rather than trusting
-// that only this coach's own frontend would ever request this id.
+// Client Details (Section 4)
 router.get('/clients/:id', coachPortalController.getClientDetail);
 router.get('/clients/:id/workout', coachPortalController.getClientWorkout);
 router.get('/clients/:id/medical-document/:docId', coachPortalController.getClientMedicalDocument);
 
-// ---- Exercise library (Section E3) — private per-coach ----
+// Exercise library (Section E3) — private per-coach
 router.get('/exercises', exerciseController.getMyExercises);
 router.post(
   '/exercises',
@@ -106,7 +99,7 @@ router.put(
 );
 router.delete('/exercises/:id', exerciseController.deleteExercise);
 
-// ---- Workout plans (Sections E4/E5) ----
+// Workout plans (Sections E4/E5)
 router.get('/workout-plans', workoutPlanController.getMyPlans);
 router.post(
   '/workout-plans',
@@ -116,10 +109,6 @@ router.post(
     body('duration').notEmpty().withMessage('Duration is required'),
     body('description').optional().isString().trim(),
     body('components').optional().isArray(),
-    // Section E4: this only validates SHAPE (real Mongo ids). Whether
-    // each id is actually one of this coach's own accepted clients is
-    // enforced in workoutPlanController.assertAssignedToEligible, not
-    // here — that check needs a DB query the validator layer can't do.
     body('assignedTo').optional().isArray(),
     body('assignedTo.*').optional().isMongoId().withMessage('Invalid client selected'),
   ],
@@ -140,8 +129,7 @@ router.put(
 );
 router.delete('/workout-plans/:id', workoutPlanController.deletePlan);
 
-// Notifications (Section 12) — coach bell, scoped to this coach only
-// (coachPortalController.getMyNotifications filters on req.coach._id).
+// Notifications (Section 12)
 router.get('/notifications', coachPortalController.getMyNotifications);
 router.put('/notifications/:id/read', coachPortalController.markNotificationRead);
 router.put('/notifications/mark-all-read', coachPortalController.markAllNotificationsRead);

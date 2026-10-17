@@ -3,20 +3,8 @@ const User = require('../models/User');
 const escapeRegex = require('../utils/escapeRegex');
 const { parsePagination } = require('../utils/paginate');
 
-// All of these sit behind adminRoutes.js's router.use(protect, admin) —
-// same as getMembers/createMember/etc. in adminController.js. Only an
-// authenticated admin can reach any of this.
-//
-// Coaches are User documents with role: 'coach' — NOT a separate
-// collection. This used to be a standalone `Coach` model/collection,
-// which is why admin-created coaches could never log in: the unified
-// POST /auth/login only ever queries the User collection
-// (authService.loginUser -> User.findOne({ email })), so an account
-// living anywhere else was invisible to login no matter how correct
-// the credentials were. Every query below is scoped with
-// { role: 'coach' } (mirroring how adminController.js scopes member
-// queries with { role: 'user' }) so these endpoints can only ever see
-// or touch coach accounts, never admins or members.
+// All of these sit behind adminRoutes.js's router.use(protect, admin)
+// Only an authenticated admin can reach any of this
 
 const getCoaches = async (req, res, next) => {
   try {
@@ -28,10 +16,6 @@ const getCoaches = async (req, res, next) => {
       const re = new RegExp(escapeRegex(search), 'i');
       filter.$or = [{ fullname: re }, { email: re }, { specialization: re }];
     }
-    // Used by AdminClasses.vue's instructor dropdown (?isActive=true) so
-    // a deactivated coach — who can no longer log in — can't be newly
-    // assigned to a class. The main coach-management table calls this
-    // without the param and still sees everyone, active or not.
     if (isActive !== undefined) {
       filter.isActive = isActive === 'true';
     }
@@ -62,16 +46,8 @@ const getCoach = async (req, res, next) => {
   }
 };
 
-// The only way a coach account can be created — always by an authenticated
-// admin, never by the coach themself. Closes the self-registration gap in
-// the current CoachSignup.vue flow.
-//
-// Creates a normal User document with role: 'coach' (same shape/hook
-// chain as adminController.createMember's role: 'user'), so the account
-// this endpoint creates is the exact same kind of record the unified
-// POST /auth/login already knows how to authenticate — no separate
-// login path, no separate collection, nothing coach-specific to keep
-// in sync by hand.
+// The only way a coach account can be created — always by an authenticated admin
+// The only way a coach account can be created — always by an authenticated admin, never by the coach themself
 const createCoach = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -79,10 +55,6 @@ const createCoach = async (req, res, next) => {
 
     const { fullname, email, password, specialization } = req.body;
 
-    // Email is unique across the whole User collection (admins, members,
-    // and coaches all share it), so this check also catches a coach
-    // email colliding with an existing member/admin account — which is
-    // correct: it's the same login table now.
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) {
       return res.status(409).json({ success: false, message: 'An account with this email already exists' });
@@ -94,11 +66,7 @@ const createCoach = async (req, res, next) => {
       password,
       specialization,
       role: 'coach',
-      isVerified: true, // admin-created, same as createMember — no self-serve verification step
-      // Explicit rather than relying on the schema default alone — see
-      // isDisplayed's comment in User.js. New coaches are visible to
-      // clients right away; an admin can hide this one afterward via
-      // setCoachVisibility if needed.
+      isVerified: true,
       isDisplayed: true,
       createdBy: req.user._id,
     });
@@ -164,14 +132,8 @@ const setCoachStatus = async (req, res, next) => {
   }
 };
 
-// Admin-only control over whether a coach is publicly displayed on the
-// Client/User "Coaches" page (Section 9). Distinct from setCoachStatus
-// above — isActive controls whether the coach can log in at all,
-// isDisplayed only controls public visibility. Hiding a coach here must
-// NOT touch isActive, existing CoachRegistrationRequest documents, or
-// any already-accepted client relationship — see the model comments on
-// CoachRegistrationRequest for why accepted relationships are untouched
-// by this toggle.
+// Admin-only control over whether a coach is publicly displayed on the Client/User "Coaches" page
+// Hiding a coach here must NOT touch isActive, existing CoachRegistrationRequest documents
 const setCoachVisibility = async (req, res, next) => {
   try {
     const errors = validationResult(req);

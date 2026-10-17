@@ -1,19 +1,4 @@
-/**
- * check_duplicate_payment_ids.js
- *
- * Run this BEFORE deploying the `unique: true` change on
- * Subscription.paymentId. It finds any paymentId that appears on more
- * than one Subscription document — those would make MongoDB's unique
- * index build fail (or, if the index doesn't exist yet, represent
- * exactly the double-extension bug requirement #9 was guarding against).
- *
- * Usage:
- *   node check_duplicate_payment_ids.js
- *
- * Reads MONGODB_URI from your .env the same way config/db.js does,
- * falling back to the same local default. Does NOT modify any data —
- * read-only report.
- */
+// check_duplicate_payment_ids.js
 
 require('dotenv').config();
 const mongoose = require('mongoose');

@@ -1,11 +1,5 @@
-// test/memberSessions.test.js - run with:  npm test
-//
-// Multiple Time-In / Time-Out sessions per day, duplicate/double-tap
-// protection, idempotent retries and honest failure reporting, against the real
-// service/controller code with the Mongoose models replaced by an in-memory
-// store that simulates the schema's unique indexes (see test/helpers/fakeStore).
-// It verifies application logic; it does NOT prove real MongoDB behaviour, so
-// the staging checklist in ATTENDANCE_FIX.md still applies.
+// test/memberSessions.test.js - run with: npm test
+// test/memberSessions.test.js - run with: npm test Multiple Time-In / Time-Out sessions per day
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -22,7 +16,7 @@ const cardLookup = require('../services/rfidCardLookup');
 
 const cards = []; const attendance = []; const users = []; const subs = [];
 install(RFIDCard, cards, { active: true, cardType: 'MEMBER' }, (d, s) => { if (s.some((x) => x.cardId === d.cardId)) throw dup(); });
-// Mirrors the Attendance schema's unique partial indexes.
+// Mirrors the Attendance schema's unique partial indexes
 install(Attendance, attendance, {}, (d, s) => {
   if (d.openSession === true && s.some((x) => x.openSession === true && same(x.userId, d.userId))) throw dup();
   if (typeof d.requestId === 'string' && s.some((x) => x.requestId === d.requestId)) throw dup();
@@ -38,20 +32,19 @@ cardLookup.findByUid = (uid) => ({
 const socketUtil = require('../utils/socket');
 socketUtil.emitToAdmins = () => {}; socketUtil.emitToUser = () => {};
 const deductions = [];
-require('../services/subscriptionService').recordAttendanceSession = async (id, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(id)); return { deducted: true }; }; // mimics the real service for a repeat session
+require('../services/subscriptionService').recordAttendanceSession = async (id, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(id)); return { deducted: true }; };
 
 const attendanceService = require('../services/attendanceService');
 const memberAttendance = require('../services/memberAttendanceService');
 const adminController = require('../controllers/adminController');
 const errorMiddleware = require('../middleware/errorMiddleware');
 
-// ------------------------------------------------------------------- helpers
+// Helpers
 const UID = 'AAAA1111';
 const day = 24 * 3600 * 1000;
 let M, M2;
 const res = () => { const r = { code: 200, body: null, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
-// Calls the real controller; unexpected errors go to the real error middleware,
-// exactly as Express would do.
+// Calls the real controller; unexpected errors go to the real error middleware
 const manual = async (body, headers = {}) => {
   const r = res();
   const req = { user: { _id: nid(), role: 'admin' }, body, query: {}, params: {}, get: (h) => headers[h], method: 'POST', originalUrl: '/api/admin/attendance/manual' };
@@ -60,7 +53,7 @@ const manual = async (body, headers = {}) => {
 };
 const timeIn = (extra = {}) => manual({ userId: M._id, action: 'checkin', ...extra });
 const timeOut = (extra = {}) => manual({ userId: M._id, action: 'checkout', ...extra });
-// Quiet reader: move the last-signal marker back past the debounce window instead of sleeping.
+// Quiet reader
 const settle = () => cards.forEach((c) => { if (c.lastScannedAt) c.lastScannedAt = new Date(Date.now() - 60_000); if (c.lastSignalAt) c.lastSignalAt = new Date(Date.now() - 60_000); });
 const tap = async (uid = UID) => { settle(); return attendanceService.processScan(uid); };
 const mine = () => attendance.filter((a) => same(a.userId, M._id));
@@ -79,7 +72,7 @@ test.beforeEach(() => {
   M2 = addMember('Juan Dela Cruz', 'BBBB2222');
 });
 
-// ------------------------------------------------------- sessions (manual)
+// Sessions (manual)
 test('Time-In then Time-Out saves a session with the server timestamps', async () => {
   const a = await timeIn();
   assert.equal(a.code, 201);
@@ -112,7 +105,7 @@ test('several sessions in one day: each Time-In is a new row, each Time-Out clos
   assert.equal(rows.filter((r) => r.checkOut).length, 2);
   assert.equal(open().length, 1, 'the third session stays active until timed out');
   assert.ok(rows.every((r) => r.dayKey === rows[0].dayKey), 'all on the same date');
-  // earlier sessions' timestamps are never overwritten by later ones
+  // Earlier sessions
   assert.ok(rows[0].checkOut <= rows[1].checkIn && rows[1].checkOut <= rows[2].checkIn);
 });
 
@@ -148,7 +141,7 @@ test('sessions belong to the right member', async () => {
   assert.equal(attendance.filter((a) => same(a.userId, M2._id) && !a.checkOut).length, 1, "M2's session untouched");
 });
 
-// ---------------------------------------------------------- double taps
+// Double taps
 test('rapid double Time-In (no key) creates ONE session', async () => {
   const [a, b] = await Promise.all([timeIn(), timeIn()]);
   assert.deepEqual([a.code, b.code].sort(), [201, 409]);
@@ -172,7 +165,7 @@ test('rapid double Time-Out closes the session once and leaves its timestamp alo
   assert.deepEqual([a.code, b.code].sort(), [200, 409]);
   assert.equal(mine().length, 1);
   const stamp = +mine()[0].checkOut;
-  await timeOut(); // late third attempt
+  await timeOut();
   assert.equal(+mine()[0].checkOut, stamp);
 });
 
@@ -187,8 +180,6 @@ test('many simultaneous Time-Ins never produce more than one open session', asyn
 test('RFID tap and admin Time-In racing: never two rows, never two open sessions, one deduction', async () => {
   settle();
   const [t, m] = await Promise.allSettled([attendanceService.processScan(UID), timeIn()]);
-  // A tap is a toggle: if the admin's Time-In lands first, the tap is a (valid) Time-Out
-  // of that same session; if the tap lands first, the admin's request is refused.
   assert.equal(mine().length, 1, 'one session row, not two');
   assert.ok(mine().filter((a) => a.openSession === true).length <= 1);
   assert.equal(deductions.length, 1);
@@ -196,7 +187,7 @@ test('RFID tap and admin Time-In racing: never two rows, never two open sessions
   assert.ok(okCount >= 1);
 });
 
-// --------------------------------------------------- idempotent retries
+// Idempotent retries
 test('retrying a Time-In after a lost response returns the original session (no second row)', async () => {
   const k = 'retry-in-000001';
   const first = await timeIn({ requestId: k });
@@ -214,8 +205,8 @@ test('retrying a Time-Out after a lost response does not close anything else or 
   const k = 'retry-out-00001';
   const first = await timeOut({ requestId: k });
   assert.equal(first.code, 200);
-  await timeIn(); // member starts session 2
-  const retry = await timeOut({ requestId: k }); // stale retry of the FIRST time-out
+  await timeIn();
+  const retry = await timeOut({ requestId: k });
   assert.equal(retry.code, 200);
   assert.equal(retry.body.replayed, true);
   assert.equal(String(retry.body.data._id), String(first.body.data._id));
@@ -243,7 +234,7 @@ test('Idempotency-Key header works like requestId', async () => {
   assert.equal(mine().length, 1);
 });
 
-// -------------------------------------------------- failures are honest
+// Failures are honest
 test('a failed database write returns an error (never success), saves nothing, and a retry with the same key works', async () => {
   const realCreate = Attendance.create;
   Attendance.create = async () => { throw Object.assign(new Error('connection timed out'), { name: 'MongoNetworkTimeoutError' }); };
@@ -285,7 +276,7 @@ test('production never leaks driver text on a 5xx; duplicate keys are not mislab
   } finally { process.env.NODE_ENV = env; console.error = realErr; }
 });
 
-// ------------------------------------------------------------ stale rows
+// Stale rows
 test('a session left open on a previous day does not lock the member out; its time-out is not invented', async () => {
   const old = new Date(Date.now() - 2 * day);
   attendance.push({ _id: nid(), userId: M._id, subjectType: 'member', attendanceType: 'MEMBER', checkIn: old, createdAt: old, openSession: true, dayKey: '2020-01-01' });
@@ -307,7 +298,7 @@ test('a legacy row from before this change (no openSession flag) still counts as
   assert.ok(attendance[0].checkOut, 'the legacy row is the one that was closed');
 });
 
-// -------------------------------------------------------------- RFID taps
+// RFID taps
 test('RFID: three in/out cycles in a day are three sessions; one deduction', async () => {
   for (let i = 0; i < 3; i += 1) {
     assert.equal((await tap()).action, 'checkin');
@@ -336,7 +327,7 @@ test('RFID: a repeated signal right after a tap (inside the debounce window) is 
   assert.equal(open().length, 1, 'still checked in - the repeat did not check out');
 });
 
-// ------------------------------------------------------- history & reports
+// History & reports
 test('member history lists every session, including several on one date, newest first', async () => {
   const userController = require('../controllers/userController');
   await timeIn(); await timeOut(); await timeIn(); await timeOut(); await timeIn();

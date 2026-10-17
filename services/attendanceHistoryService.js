@@ -1,22 +1,5 @@
 // services/attendanceHistoryService.js
-//
-// Read-side helpers shared by the MEMBER history endpoint (GET /users/attendance)
-// and the ADMIN list endpoints (GET /rfid/logs, GET /rfid/today).
-//
-// Rule that matters: every attendance SESSION is its own row. Nothing here
-// groups, de-duplicates or "takes the first record of the day" - it only adds
-// read-only labels to the rows that exist:
-//
-//   status          'Inside'      open session from today
-//                   'Completed'   has a Time-Out
-//                   'No time-out' open row from an earlier day (member never
-//                                 tapped out; its Time-Out stays empty)
-//   sessionNo       1, 2, 3 ... = this row's position among the SAME person's
-//                   sessions on the SAME Manila day (by Time-In)
-//   sessionsThatDay how many sessions that person had that day
-//
-// Only people with an account (member userId / employee coachId) are numbered;
-// visitor passes and walk-ins have no stable identity across rows.
+// Nothing here groups, de-duplicates or "takes the first record of the day"
 const Attendance = require('../models/Attendance');
 const { startOfLocalDay, endOfLocalDay, formatLocalDateLabel } = require('../utils/localDate');
 
@@ -40,11 +23,7 @@ function statusOf(row, now = new Date()) {
   return 'Inside';
 }
 
-/**
- * Pure: given the rows to label and ALL sibling rows (a superset that contains
- * every session of the same people on the same days), returns a Map of
- * rowId -> { sessionNo, sessionsThatDay }.
- */
+// Pure
 function numberSessions(rows, siblings) {
   const wanted = new Set();
   for (const r of rows) {
@@ -71,10 +50,7 @@ function numberSessions(rows, siblings) {
   return out;
 }
 
-/**
- * Adds status / sessionNo / sessionsThatDay / dayKey to plain row objects.
- * One extra query for the whole page (not one per row).
- */
+// Adds status / sessionNo / sessionsThatDay / dayKey to plain row objects
 async function decorate(rows, now = new Date()) {
   const owners = new Set();
   let min = null;
@@ -110,12 +86,7 @@ async function decorate(rows, now = new Date()) {
   });
 }
 
-/**
- * Filter pieces from a query string. Dates are Manila days ('YYYY-MM-DD',
- * inclusive on both ends). Full ISO instants are still accepted, so older
- * callers (the weekly chart) keep working unchanged.
- * Returns { ok:false, message } for an invalid date.
- */
+// Filter pieces from a query string
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 function dateFilter(startDate, endDate) {
   const { parseRange } = require('../utils/dateRange');
@@ -142,7 +113,7 @@ function dateFilter(startDate, endDate) {
   return { ok: true, range: Object.keys(range).length ? range : null };
 }
 
-// "Still inside" = no Time-Out recorded AND opened today.
+// "Still inside" = no Time-Out recorded AND opened today
 function insideFilter(now = new Date()) {
   return { checkOut: { $exists: false }, createdAt: { $gte: startOfLocalDay(now) }, missedCheckOut: { $ne: true } };
 }

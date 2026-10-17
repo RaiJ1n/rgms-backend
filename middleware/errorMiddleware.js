@@ -1,16 +1,4 @@
-// Central error handler.
-//
-// Two things matter for attendance (and everything else that writes to the DB):
-//  1. Failures must leave a diagnostic trail on the SERVER. Before this, an
-//     unexpected error (DB timeout, validation, duplicate key) was turned into
-//     a JSON response and never logged, so a failing write was invisible.
-//  2. The client must get an honest message. Before this, EVERY duplicate-key
-//     error (E11000) was reported as "This reference number has already been
-//     submitted" - correct only for payment references - which made unrelated
-//     failures (e.g. a duplicate attendance/session key) look like a payment
-//     problem.
-// Logs carry method, path, error name/code and message only - never request
-// bodies, headers, tokens, or connection strings.
+// Central error handler
 const isProd = () => process.env.NODE_ENV === 'production';
 
 function logError(err, req, status) {
@@ -42,8 +30,7 @@ const errorMiddleware = (err, req, res, next) => {
   const statusCode = err.statusCode || 500;
   if (statusCode >= 500) logError(err, req, statusCode);
 
-  // In production a 5xx never echoes driver/internal text to the user; it says
-  // the save did not happen and that retrying is safe.
+  // In production a 5xx never echoes driver/internal text to the user
   const message = statusCode >= 500 && isProd()
     ? 'The request could not be saved. Nothing was recorded - please try again.'
     : err.message || 'Server Error';

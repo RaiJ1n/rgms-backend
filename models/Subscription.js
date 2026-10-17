@@ -9,10 +9,7 @@ const subscriptionSchema = new mongoose.Schema({
     ref: 'MembershipPlan', 
     required: true },
 
-  // unique: true closes the race that a plain findOne-then-create check
-  // can't — if createSubscription is ever invoked twice for the same
-  // payment (double-click, retry, etc.), the second insert fails at the
-  // database level instead of silently creating a second extension.
+  // Unique
   paymentId: { type: mongoose.Schema.Types.ObjectId, 
     ref: 'Payment', 
     required: true,
@@ -28,23 +25,11 @@ const subscriptionSchema = new mongoose.Schema({
     enum: ['active', 'inactive', 'expired'], 
     default: 'inactive' },
 
-  // Membership/session deduction (Group 3, Section "Membership Session
-  // Deduction"): incremented by subscriptionService.recordAttendanceSession
-  // whenever the member is granted gym access via an RFID tap or a
-  // manually-recorded attendance entry — never for a Day Pass plan (a
-  // 1-day/1-session plan has nothing meaningful left to track after its
-  // single visit). The *total* sessions a plan grants is derived from
-  // the subscription's own day span (endDate - startDate in days) —
-  // the same figure Dashboard.vue already computes for its "X/Y days"
-  // progress bar — rather than a separate stored field, so there's only
-  // one place (the date range) that defines how long/how many visits a
-  // plan is worth.
+  // Membership/session deduction (Group 3, Section "Membership Session Deduction")
   sessionsUsed: { type: Number, default: 0 },
 
-  // Manila 'YYYY-MM-DD' of the last day a session was deducted. Written in the
-  // SAME atomic update that increments sessionsUsed (subscriptionService.
-  // recordAttendanceSession), so a day can be charged at most once. Deliberately
-  // no default: legacy documents simply lack it and the first deduction works.
+  // Manila 'YYYY-MM-DD' of the last day a session was deducted
+  // Written in the SAME atomic update that increments sessionsUsed (subscriptionService. recordAttendanceSession)
   lastDeductedDayKey: { type: String },
 
 }, { timestamps: true });

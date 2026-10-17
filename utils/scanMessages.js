@@ -1,34 +1,8 @@
 // utils/scanMessages.js
-//
-// Single source of truth for "what does a scan outcome look like to a
-// human" — mirrors the same "single source of truth" idea
-// attendanceService.js already uses for check-in/check-out decisions,
-// just for messaging instead of logic. Both the Arduino LCD
-// (rfidService.js's handleRFIDData) and anything HTTP/socket-facing
-// (rfidController.js, attendanceService.js's rfid:error payloads) pull
-// from this one map, so the wording a member sees on the physical
-// reader and the wording an admin sees on screen never drift apart.
-//
-// lcdLine1/lcdLine2 are kept to a handful of characters — this is a
-// standard 16x2 LCD, so anything longer gets truncated by the sketch's
-// own truncation logic (see the comment in rfidService.js's
-// handleRFIDData). title/body are the fuller wording for the REST
-// response / admin UI, where there's no 16-column limit.
-//
-// NOTE on buzzer patterns: the spec calls for distinct buzzer patterns
-// per outcome (1 long beep, 2 short beeps, etc.), but sketch_aug7d.ino
-// has no buzzer wired up at all — no pin defined, no tone() calls. This
-// is a hardware gap, not just a missing software feature, so `buzzer`
-// here is metadata only and is not currently sent over serial. If a
-// piezo buzzer gets wired later: pins 9-13 (MFRC522/SPI) and A4/A5
-// (LCD/I2C) are taken, so pick a free digital pin (e.g. 8), add a
-// tone()-based handler in the sketch for a 3rd "|"-separated segment on
-// the existing scan-result message, and read `buzzer` from here to send
-// it — e.g. `${msg.lcdLine1}|${msg.lcdLine2}|${msg.buzzer}`.
+// Both the Arduino LCD (rfidService.js's handleRFIDData) and anything HTTP/socket-facing
 const SCAN_MESSAGES = {
   success_checkin: {
     lcdLine1: 'WELCOME',
-    // lcdLine2 is filled in with the member's name at send time.
     lcdStage2: { lcdLine1: 'TIME IN', lcdLine2: 'SUCCESS' },
     buzzer: 'short_1',
     title: 'Attendance Recorded Successfully',
@@ -104,10 +78,8 @@ const SCAN_MESSAGES = {
     title: 'Card Not Assigned',
     body: 'This temporary card is not assigned to anyone. Please see the front desk.',
   },
-  // The reader re-sent the same card while it was still on the reader. This is
-  // normal and frequent, so callers keep it SILENT (no LCD change, no admin
-  // popup) - otherwise it would overwrite the TIME IN / TIME OUT confirmation
-  // the member is reading. The text is for REST clients / logs only.
+  // The reader re-sent the same card while it was still on the reader
+  // This is normal and frequent, so callers keep it SILENT (no LCD change, no admin popup)
   duplicate_signal: {
     lcdLine1: 'DUPLICATE',
     lcdLine2: 'SCAN IGNORED',
@@ -152,9 +124,7 @@ const SCAN_MESSAGES = {
   },
 };
 
-// Fallback for any errorType not in the map above (defensive — keeps a
-// future new errorType from crashing message lookup instead of just
-// looking slightly generic).
+// Fallback for any errorType not in the map above
 const DEFAULT_MESSAGE = {
   lcdLine1: 'ACCESS',
   lcdLine2: 'DENIED',

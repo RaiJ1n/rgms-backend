@@ -1,36 +1,14 @@
-// One-off script to seed a starter exercise library (Section 13/14 of
-// the spec) into one or more coaches' PRIVATE exercise collections.
-// Exercise.js is deliberately per-coach (Section 16 — no shared/global
-// catalog), so this always writes real Exercise documents scoped to a
-// real coachId, never a separate "template" table a coach would have
-// to copy from manually.
-//
-// Usage (run from the backend project root):
-//   node scripts/seedExercises.js coach@example.com   // seed just this coach
-//   node scripts/seedExercises.js --all                // seed every existing coach
-//
-// Safe to re-run: exercises are matched by (coachId, name) before
-// inserting, so running this twice for the same coach never creates
-// duplicates — it just reports what's already there and skips it.
+// One-off script to seed a starter exercise library
+// Exercise.js is deliberately per-coach (Section 16 — no shared/global catalog)
 
 require('dotenv').config();
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Exercise = require('../models/Exercise');
 
-// Section 13: Strength + Calisthenics, the two categories explicitly
-// required. Section 14: recommended the category list stay at
-// Strength/Cardio/Flexibility/Balance/HIIT/Calisthenics — full coverage
-// of what a gym's exercise library actually needs without padding it
-// with categories for their own sake — so this seed only populates the
-// two categories the spec actually asked to be pre-filled; Cardio/
-// Flexibility/Balance/HIIT stay available for coaches to add their own
-// into, same as before this script existed.
-//
-// muscleGroups values are drawn from utils/muscleGroups.js's fixed
-// enum, matching the frontend's tag picker exactly.
+// Strength + Calisthenics, the two categories explicitly required
 const STARTER_EXERCISES = [
-  // ---- Strength ----
+  // Strength
   { name: 'Bench Press', category: 'Strength', muscleGroups: ['Chest', 'Triceps', 'Shoulders'], defaultSets: 4, defaultReps: 8, description: 'Barbell press lying on a flat bench.' },
   { name: 'Squat', category: 'Strength', muscleGroups: ['Quadriceps', 'Glutes', 'Hamstrings'], defaultSets: 4, defaultReps: 8, description: 'Barbell back squat.' },
   { name: 'Deadlift', category: 'Strength', muscleGroups: ['Back', 'Hamstrings', 'Glutes'], defaultSets: 4, defaultReps: 6, description: 'Conventional barbell deadlift.' },
@@ -40,17 +18,13 @@ const STARTER_EXERCISES = [
   { name: 'Tricep Extension', category: 'Strength', muscleGroups: ['Triceps'], defaultSets: 3, defaultReps: 12, description: 'Overhead or cable tricep extension.' },
   { name: 'Leg Press', category: 'Strength', muscleGroups: ['Quadriceps', 'Glutes', 'Hamstrings'], defaultSets: 4, defaultReps: 10, description: 'Machine leg press.' },
 
-  // ---- Calisthenics ----
+  // Calisthenics
   { name: 'Push-Up', category: 'Calisthenics', muscleGroups: ['Chest', 'Triceps', 'Shoulders'], defaultSets: 3, defaultReps: 15, description: 'Standard bodyweight push-up.' },
   { name: 'Pull-Up', category: 'Calisthenics', muscleGroups: ['Back', 'Biceps'], defaultSets: 3, defaultReps: 8, description: 'Overhand grip, full range of motion.' },
   { name: 'Chin-Up', category: 'Calisthenics', muscleGroups: ['Back', 'Biceps'], defaultSets: 3, defaultReps: 8, description: 'Underhand grip pull-up variation.' },
   { name: 'Bodyweight Squat', category: 'Calisthenics', muscleGroups: ['Quadriceps', 'Glutes'], defaultSets: 3, defaultReps: 15, description: 'No-load squat, full depth.' },
   { name: 'Dips', category: 'Calisthenics', muscleGroups: ['Chest', 'Triceps'], defaultSets: 3, defaultReps: 10, description: 'Parallel bar or bench dips.' },
   { name: 'Lunges', category: 'Calisthenics', muscleGroups: ['Quadriceps', 'Glutes', 'Hamstrings'], defaultSets: 3, defaultReps: 12, description: 'Alternating forward or walking lunges, per leg.' },
-  // defaultReps has no separate "hold duration" field in the schema —
-  // recorded as 1 rep per set here, with the actual hold time called
-  // out in the description, rather than adding a duration field this
-  // seed alone would need (out of scope for Section 13).
   { name: 'Plank', category: 'Calisthenics', muscleGroups: ['Core'], defaultSets: 3, defaultReps: 1, description: 'Forearm plank, 30–60 second hold per set.' },
 ];
 

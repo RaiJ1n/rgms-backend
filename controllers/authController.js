@@ -16,7 +16,7 @@ const register = async (req, res, next) => {
       password,
       phone,
       address,
-      privacyNoticeAcknowledged: true, // validator above already rejected anything but true
+      privacyNoticeAcknowledged: true,
     });
 
     emailService.sendWelcomeEmail(user).catch((err) =>
@@ -39,14 +39,8 @@ const register = async (req, res, next) => {
   }
 };
 
-// Single unified login for every account type — Admin, Coach, and
-// User/Member all sign in here. There's no "role" field in the request
-// body and there never should be: authService.loginUser looks the
-// account up by email only, and whatever role is stored on that User
-// document (set at account creation, never by the login request) is
-// what comes back in safeUser.role. The frontend uses that returned
-// role to decide which dashboard to redirect to; it must never accept
-// a role the client asserts about itself.
+// Single unified login for every account type — Admin, Coach, and User/Member all sign in here
+// There's no "role" field in the request body and there never should be
 const login = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -62,10 +56,7 @@ const login = async (req, res, next) => {
   }
 };
 
-// NOTE: this route must run behind the `protect` middleware (see
-// routes/authRoutes.js) so req.user is populated — that's how we know
-// whose tokenVersion to bump. Logout that doesn't require a valid
-// token can't invalidate one.
+// NOTE
 const logout = async (req, res, next) => {
   try {
     if (req.user) {
@@ -107,8 +98,7 @@ const verifyResetCode = async (req, res, next) => {
     await authService.verifyForgotPasswordOtp({ email, otp });
     res.json({ success: true, message: 'Code verified' });
   } catch (error) {
-    // Wrong/expired code is the user's mistake, not a server fault —
-    // 400 rather than falling through to the generic error handler.
+    // Wrong/expired code is the user's mistake, not a server fault
     if (error.message === 'Invalid or expired code') {
       return res.status(400).json({ success: false, message: error.message });
     }

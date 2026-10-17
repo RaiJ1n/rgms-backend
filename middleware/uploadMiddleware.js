@@ -3,9 +3,7 @@ const { CloudinaryStorage } = require("multer-storage-cloudinary");
 
 const cloudinary = require("../config/cloudinary");
 
-// ---------------------------------------------------------
 // General-purpose uploader
-// ---------------------------------------------------------
 
 const storage = new CloudinaryStorage({
   cloudinary,
@@ -22,9 +20,7 @@ const upload = multer({
   },
 });
 
-// ---------------------------------------------------------
 // Medical document uploader
-// ---------------------------------------------------------
 
 const medicalDocumentStorage = new CloudinaryStorage({
   cloudinary,

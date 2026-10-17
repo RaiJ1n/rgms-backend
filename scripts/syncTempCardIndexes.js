@@ -1,24 +1,8 @@
 // scripts/syncTempCardIndexes.js
-//
-// Creates the indexes the temporary-card feature relies on. ADDITIVE ONLY:
-// it never drops or rewrites data and never drops an existing index.
-//
-//   TempCardAssignment (new, empty collection)
-//     one_active_per_member  unique {memberId}   where status = 'ACTIVE'
-//     one_holder_per_card    unique {tempCardId} where holdsCard = true
-//   Attendance - see scripts/syncAttendanceIndexes.js (one open session per member;
-//     it also DROPS the old one-row-per-day index this script used to describe)
-//
-// BACK UP FIRST (mongodump of rfidcards, attendances, subscriptions), then:
-//   node scripts/syncTempCardIndexes.js          # prints what it will create
-//   node scripts/syncTempCardIndexes.js --apply  # creates the indexes
-//
-// Mongoose's autoIndex would also build these at server start; running this
-// first (against staging, then production) makes the moment explicit and lets
-// you see any failure before the new code is live.
+// ADDITIVE ONLY: it never drops or rewrites data and never drops an existing index
 try {
   require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
-} catch (_) { /* dotenv optional */ }
+} catch (_) { }
 const mongoose = require('mongoose');
 const connectDB = require('../config/db');
 const Attendance = require('../models/Attendance');

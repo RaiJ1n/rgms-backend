@@ -1,30 +1,16 @@
 // services/scanDedup.js
-//
-// Request-level idempotency for POST /rfid/scan, keyed by the bridge's scanId.
-//
-//   * Same scanId while the first request is still running -> the second
-//     caller waits for and shares that one result (no second execution).
-//   * Same scanId after it finished (a retry because the response was lost)
-//     -> the original result is returned, flagged `replayed`.
-//
-// Only completed outcomes ({status, body}, including business denials) are
-// remembered. An unexpected failure (thrown error) is NOT cached, so a retry
-// can really try again; the database-level request ids still make that retry
-// safe for member attendance.
-//
-// In-memory and per-process by design: it is the fast path. The durable path
-// is Attendance.requestId / checkOutRequestId (see attendanceService).
+// services/scanDedup.js Request-level idempotency for POST /rfid/scan, keyed by the bridge's scanId. * Same scanId
 const scanConfig = require('../utils/scanConfig');
 
 const inflight = new Map();
-const recent = new Map(); // key -> { value, at }
+const recent = new Map();
 const MAX_ENTRIES = 1000;
 
 function prune(now) {
   const ttl = scanConfig.scanResultTtlMs;
   for (const [k, v] of recent) {
     if (now - v.at > ttl) recent.delete(k);
-    else break; // Map keeps insertion order => the rest are newer
+    else break;
   }
   while (recent.size > MAX_ENTRIES) recent.delete(recent.keys().next().value);
 }

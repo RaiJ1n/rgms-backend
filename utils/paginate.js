@@ -1,10 +1,4 @@
-// Shared page/limit parsing for admin list endpoints (members, payments,
-// classes). Keeping this in one place means all three endpoints clamp and
-// default the same way instead of drifting apart.
-//
-// `export=true` bypasses paging entirely (capped at EXPORT_MAX) so the
-// "Export" buttons on these pages can still download every row matching
-// the current search/filters, not just whatever page is on screen.
+// Shared page/limit parsing for admin list endpoints (members, payments, classes)
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 const EXPORT_MAX = 5000;

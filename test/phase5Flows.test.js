@@ -1,7 +1,4 @@
-// test/phase5Flows.test.js - end-to-end attendance + deduction flows with the
-// REAL subscriptionService (the older suites mock the deduction). UNIT/FLOW
-// tests over the in-memory model store with a mocked clock: they prove the
-// application logic, NOT MongoDB behaviour (see dailyDeduction.mongo.test.js).
+// test/phase5Flows.test.js - end-to-end attendance + deduction flows with the REAL subscriptionService
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -38,7 +35,7 @@ cardLookup.findByUid = (uid) => ({
 const socketUtil = require('../utils/socket');
 socketUtil.emitToAdmins = () => {}; socketUtil.emitToUser = () => {};
 
-// REAL deduction service, wrapped only to count calls (never replaced).
+// REAL deduction service, wrapped only to count calls (never replaced)
 const subscriptionService = require('../services/subscriptionService');
 let deductionCalls = 0;
 const realRecord = subscriptionService.recordAttendanceSession;
@@ -51,7 +48,7 @@ const scanDedup = require('../services/scanDedup');
 const { formatLocalDateLabel } = require('../utils/localDate');
 
 const DAY = 24 * 3600 * 1000;
-const START = Date.parse('2026-10-14T03:00:00Z'); // 11:00 Manila
+const START = Date.parse('2026-10-14T03:00:00Z');
 let clock;
 const at = (iso) => clock.setTime(Date.parse(iso));
 const advance = (ms) => clock.tick(ms);
@@ -128,9 +125,9 @@ test('original + temporary card of the same member share sessions and ONE daily 
   const loan = { _id: nid(), memberId: u._id, originalCardId: orig._id, tempCardId: spare._id, status: 'ACTIVE', holdsCard: true, expiresAt: new Date(START + DAY) };
   assignments.push(loan); spare.memberAssignmentId = loan._id; cards.push(spare);
 
-  assert.equal(await scan('D0D0D0D0'), 'checkin'); advance(6000);   // spare: Time-In
-  assert.equal(await scan('AAAA1111'), 'checkout'); advance(6000);  // original: Time-Out
-  assert.equal(await scan('D0D0D0D0'), 'checkin'); advance(6000);   // spare: second session
+  assert.equal(await scan('D0D0D0D0'), 'checkin'); advance(6000);
+  assert.equal(await scan('AAAA1111'), 'checkout'); advance(6000);
+  assert.equal(await scan('D0D0D0D0'), 'checkin'); advance(6000);
   assert.equal(attendance.length, 2);
   assert.ok(attendance.every((a) => a.attendanceType === 'MEMBER' && same(a.userId, u._id)));
   assert.equal(sub.sessionsUsed, 1);
@@ -159,7 +156,6 @@ test('visitor passes (RFID and manual) create no User or Subscription and never 
   assert.equal(await scan('A1B2C3D4'), 'checkout');
   assert.equal(attendance.filter((a) => a.attendanceType === 'VISITOR').length, 1);
 
-  // a second pass used through the manual admin path
   cards.push({ _id: nid(), cardId: 'E5F6A7B8', cardType: 'TEMPORARY', active: true, createdAt: new Date() });
   const r2 = res();
   await rfid.issueTemporaryCard({ body: { cardId: 'E5F6A7B8', visitorName: 'Ben' }, user: { _id: 'admin1' } }, r2, (e) => { throw e; });
@@ -184,13 +180,13 @@ test('manual admin Time-In after RFID sessions the same day does not deduct agai
 
 test('Manila midnight: sessions before and after 00:00 Manila are different days (one deduction each)', async () => {
   const { sub } = addMember('Maria Santos', 'AAAA1111');
-  at('2026-10-14T15:59:30Z');                       // 23:59:30 Manila, 14 Oct
+  at('2026-10-14T15:59:30Z');
   assert.equal(await scan('AAAA1111'), 'checkin');
-  advance(20000);                                   // 23:59:50 - still the 14th
+  advance(20000);
   assert.equal(await scan('AAAA1111'), 'checkout');
   assert.equal(sub.sessionsUsed, 1);
   assert.equal(sub.lastDeductedDayKey, '2026-10-14');
-  advance(20000);                                   // 00:00:10 Manila, 15 Oct
+  advance(20000);
   assert.equal(await scan('AAAA1111'), 'checkin');
   assert.equal(sub.sessionsUsed, 2);
   assert.equal(sub.lastDeductedDayKey, '2026-10-15');
@@ -200,9 +196,9 @@ test('Manila midnight: sessions before and after 00:00 Manila are different days
 test('Manila midnight: a session left open overnight is retired (not invented), and the new day is charged once', async () => {
   const { sub } = addMember('Maria Santos', 'AAAA1111');
   at('2026-10-14T15:59:30Z');
-  assert.equal(await scan('AAAA1111'), 'checkin');  // never taps out
-  advance(70000);                                   // 00:00:40 Manila, 15 Oct
-  assert.equal(await scan('AAAA1111'), 'checkin');  // new day's first Time-In, not a Time-Out
+  assert.equal(await scan('AAAA1111'), 'checkin');
+  advance(70000);
+  assert.equal(await scan('AAAA1111'), 'checkin');
   assert.equal(attendance[0].missedCheckOut, true);
   assert.equal(attendance[0].checkOut, undefined, 'no time-out timestamp is invented');
   assert.equal(attendance[1].dayKey, '2026-10-15');
@@ -222,7 +218,7 @@ test('an unexpected database failure during deduction: the tap still succeeds, n
   assert.equal(sub.sessionsUsed, 0, 'no deduction claimed');
   assert.equal(sub.lastDeductedDayKey, undefined);
   advance(6000); assert.equal(await scan('AAAA1111'), 'checkout');
-  advance(6000); assert.equal(await scan('AAAA1111'), 'checkin');   // second session: retry succeeds
+  advance(6000); assert.equal(await scan('AAAA1111'), 'checkin');
   assert.equal(sub.sessionsUsed, 1);
   advance(6000); await scan('AAAA1111'); advance(6000); await scan('AAAA1111');
   assert.equal(sub.sessionsUsed, 1, 'and never again that day');

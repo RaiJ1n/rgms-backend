@@ -1,12 +1,5 @@
-// test/multiTap.test.js - run with:  npm test
-//
-// Four consecutive intentional RFID taps (IN, OUT, IN, OUT) vs. repeated reader
-// signals from ONE physical tap. These tests use REAL (short) time, not a
-// faked clock: the debounce window is set to 60 ms and taps are spaced just
-// beyond it, so they prove that a tap never has to wait out a long cooldown.
-//
-// Like the other suites this runs the real service/controller code over an
-// in-memory model store; it proves application logic, not MongoDB behaviour.
+// test/multiTap.test.js - run with: npm test
+// These tests use REAL (short) time, not a faked clock
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -24,7 +17,7 @@ const cardLookup = require('../services/rfidCardLookup');
 
 const cards = []; const attendance = []; const users = []; const subs = [];
 install(RFIDCard, cards, { active: true, cardType: 'MEMBER' }, (d, s) => { if (s.some((x) => x.cardId === d.cardId)) throw dup(); });
-// Mirrors the Attendance schema's unique partial indexes.
+// Mirrors the Attendance schema's unique partial indexes
 install(Attendance, attendance, {}, (d, s) => {
   if (d.openSession === true && s.some((x) => x.openSession === true && same(x.userId, d.userId))) throw dup();
   if (typeof d.requestId === 'string' && s.some((x) => x.requestId === d.requestId)) throw dup();
@@ -42,7 +35,7 @@ const emitted = [];
 socketUtil.emitToAdmins = (ev, payload) => { emitted.push([ev, payload]); };
 socketUtil.emitToUser = () => {};
 const deductions = [];
-require('../services/subscriptionService').recordAttendanceSession = async (id, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(id)); return { deducted: true }; }; // mimics the real service for a repeat session
+require('../services/subscriptionService').recordAttendanceSession = async (id, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(id)); return { deducted: true }; };
 
 const attendanceService = require('../services/attendanceService');
 const rfidController = require('../controllers/rfidController');
@@ -50,13 +43,13 @@ const scanDedup = require('../services/scanDedup');
 const scanConfig = require('../utils/scanConfig');
 const { TapDebouncer } = require('../utils/tapDebouncer');
 
-// ------------------------------------------------------------------ helpers
+// Helpers
 const UID = 'AAAA1111';
 const SPARE = 'CCCC3333';
 const day = 24 * 3600 * 1000;
 const WINDOW = 60;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// A deliberate second tap: the reader has been quiet for just over the window.
+// A deliberate second tap
 const liftAndRetap = () => sleep(WINDOW + 25);
 let M;
 const mine = () => attendance.filter((a) => same(a.userId, M._id));
@@ -71,7 +64,7 @@ function addMember(name, cardUid) {
   return u;
 }
 const httpRes = () => { const r = { code: 200, body: null, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
-// Calls the real POST /rfid/scan handler.
+// Calls the real POST /rfid/scan handler
 async function postScan(body, headers = {}) {
   const r = httpRes();
   await rfidController.scanCard(
@@ -81,7 +74,7 @@ async function postScan(body, headers = {}) {
   );
   return r;
 }
-// What the real reader/bridge does for a physical tap that is still on the reader.
+// What the real reader/bridge does for a physical tap that is still on the reader
 const holdFor = async (uid, signals, everyMs) => {
   const outcomes = [];
   for (let i = 0; i < signals; i += 1) {
@@ -98,7 +91,7 @@ test.beforeEach(() => {
   M = addMember('Maria Santos', UID);
 });
 
-// --------------------------------------------------- the headline scenario
+// The headline scenario
 test('config: the per-card window is 5 s by default, configurable, and never a daily limit', () => {
   assert.equal(scanConfig.debounceMs, WINDOW);
   delete process.env.RFID_DEBOUNCE_MS;
@@ -122,7 +115,7 @@ test('four consecutive intentional taps: IN, OUT, IN, OUT = exactly two complete
   assert.equal(open().length, 0, 'nothing left open');
   assert.equal(deductions.length, 1, 'one gym day = one subscription session');
 
-  // every action saved with its own timestamp, in order, never overwritten
+  // Every action saved with its own timestamp, in order, never overwritten
   const [s1, s2] = mine();
   assert.ok(s1.checkIn && s1.checkOut && s2.checkIn && s2.checkOut);
   assert.ok(s1.checkIn <= s1.checkOut && s1.checkOut <= s2.checkIn && s2.checkIn <= s2.checkOut);
@@ -149,9 +142,9 @@ test('a fifth and sixth tap keep alternating (the 4-tap example is not a cap)', 
   assert.equal(closed().length, 3);
 });
 
-// -------------------------------------------- one physical tap, many signals
+// One physical tap, many signals
 test('one physical tap that the reader repeats 6 times creates ONE action', async () => {
-  const out = await holdFor(UID, 6, 8); // all inside the window
+  const out = await holdFor(UID, 6, 8);
   assert.equal(out[0], 'checkin');
   assert.deepEqual(out.slice(1), Array(5).fill('duplicate_signal'));
   assert.equal(mine().length, 1);
@@ -159,8 +152,6 @@ test('one physical tap that the reader repeats 6 times creates ONE action', asyn
 });
 
 test('SLIDING window: a card resting on the reader for far longer than the window is still ONE tap', async () => {
-  // 12 signals 20 ms apart = 240 ms held, 4x the 60 ms window. A fixed cooldown
-  // would have let a repeat through after 60 ms and turned the hold into IN+OUT.
   const out = await holdFor(UID, 12, 20);
   assert.equal(out.filter((x) => x === 'checkin').length, 1);
   assert.equal(out.filter((x) => x === 'checkout').length, 0, 'a long hold never becomes a check-out');
@@ -192,7 +183,6 @@ test('four intentional taps, each one held and repeated by the reader: still exa
 });
 
 test('rapid intentional taps just past the window are never blocked by the debounce', async () => {
-  // spacing = window + 5 ms: the tightest legal rhythm
   const actions = [];
   for (let i = 0; i < 4; i += 1) {
     if (i) await sleep(WINDOW + 5);
@@ -209,7 +199,7 @@ test('the debounce is per card: two members tapping at the same moment do not af
   assert.equal(attendance.filter((x) => same(x.userId, M2._id)).length, 1);
 });
 
-// -------------------------------------------------------------- concurrency
+// Concurrency
 test('simultaneous identical signals (same instant) create exactly one action', async () => {
   const r = await Promise.allSettled(Array.from({ length: 8 }, () => attendanceService.processScan(UID)));
   assert.equal(r.filter((x) => x.status === 'fulfilled').length, 1);
@@ -230,17 +220,16 @@ test('simultaneous scans can never create two open sessions (original card + spa
   assert.ok(open().length <= 1, 'never more than one open session');
   assert.ok(mine().length <= 2);
   const ok = r.filter((x) => x.status === 'fulfilled').map((x) => x.value.action);
-  // whatever got through alternated strictly, starting with check-in
   ok.forEach((a, i) => assert.equal(a, i % 2 === 0 ? 'checkin' : 'checkout'));
   for (const x of r.filter((y) => y.status === 'rejected')) assert.ok(['duplicate_signal', 'duplicate_scan'].includes(x.reason.errorType));
 });
 
-// --------------------------------------------------- duplicate API requests
+// Duplicate API requests
 test('POST /rfid/scan: a retried request with the same scanId returns the original result and creates nothing new', async () => {
   const first = await postScan({ cardId: UID, scanId: 'bridge1-tap-0001' });
   assert.equal(first.code, 200);
   assert.equal(first.body.action, 'checkin');
-  const retry = await postScan({ cardId: UID, scanId: 'bridge1-tap-0001' }); // lost response -> bridge retries
+  const retry = await postScan({ cardId: UID, scanId: 'bridge1-tap-0001' });
   assert.equal(retry.code, 200);
   assert.equal(retry.body.action, 'checkin', 'same answer, not "duplicate" and not a check-out');
   assert.equal(retry.body.replayed, true);
@@ -263,12 +252,11 @@ test('POST /rfid/scan: the same scanId arriving twice at once is executed once',
 
 test('replay survives a server restart: the database idempotency key answers when the in-memory cache is gone', async () => {
   await postScan({ cardId: UID, scanId: 'bridge1-tap-0003' });
-  scanDedup._reset(); // restart / other process
+  scanDedup._reset();
   const retry = await postScan({ cardId: UID, scanId: 'bridge1-tap-0003' });
   assert.equal(retry.code, 200);
   assert.equal(retry.body.action, 'checkin');
   assert.equal(mine().length, 1);
-  // ...and also after the debounce window, when the retry reaches the toggle itself:
   await liftAndRetap();
   scanDedup._reset();
   const late = await postScan({ cardId: UID, scanId: 'bridge1-tap-0003' });
@@ -297,12 +285,12 @@ test('distinct scanIds are distinct taps; a malformed scanId is ignored, never a
   const b = await postScan({ cardId: UID, scanId: 'bridge1-tap-0011' });
   assert.deepEqual([a.body.action, b.body.action], ['checkin', 'checkout']);
   await liftAndRetap();
-  const c = await postScan({ cardId: UID, scanId: 'x y!' }); // invalid -> treated as no id
+  const c = await postScan({ cardId: UID, scanId: 'x y!' });
   assert.equal(c.code, 200);
   assert.equal(c.body.action, 'checkin');
 });
 
-// --------------------------------------------------------- feedback / errors
+// Feedback / errors
 test('REST feedback: success says which action; a repeated signal is a silent 429; denial keeps its own message', async () => {
   const ok = await postScan({ cardId: UID });
   assert.equal(ok.code, 200);
@@ -329,7 +317,7 @@ test('a repeated signal produces no admin popup and no second attendance event',
   assert.equal(emitted.length, before);
 });
 
-// -------------------------------------------- membership rules still apply
+// Membership rules still apply
 test('membership validation is not bypassed: the 3rd tap is refused if the plan expired after the 2nd', async () => {
   await attendanceService.processScan(UID);
   await liftAndRetap();
@@ -356,14 +344,14 @@ test('a deactivated card and an unregistered card are still refused with their o
   assert.equal(attendance.length, 0);
 });
 
-// ------------------------------------------------- failure handling
+// Failure handling
 test('an unexpected failure releases the claim: the member can retry immediately, not after the window', async () => {
   const realCreate = Attendance.create;
   Attendance.create = async () => { throw new Error('database timed out'); };
   await assert.rejects(() => attendanceService.processScan(UID), (e) => !e.statusCode);
   Attendance.create = realCreate;
   assert.equal(attendance.length, 0, 'nothing half-saved');
-  const retry = await attendanceService.processScan(UID); // NO wait
+  const retry = await attendanceService.processScan(UID);
   assert.equal(retry.action, 'checkin');
   assert.equal(mine().length, 1);
 });
@@ -378,7 +366,7 @@ test('RFID_DEBOUNCE_MS=0 disables the filter (atomic open-session guard still pr
   assert.ok(burst.length === 6);
 });
 
-// ---------------------------- existing data keeps working / multi-session UI
+// Existing data keeps working / multi-session UI
 test('existing cards and history are untouched: a card with no lastSignalAt (every pre-existing card) just works', async () => {
   const card = cards.find((c) => c.cardId === UID);
   assert.equal(card.lastSignalAt, undefined);
@@ -405,27 +393,21 @@ test('today\'s admin feed lists BOTH sessions of the day as separate rows', asyn
   const r = httpRes();
   await rfidController.todayAttendance({}, r, (e) => { throw e; });
   assert.equal(r.body.count, 2);
-  // Each row is labelled with its own session number for the admin table.
   assert.deepEqual(r.body.data.map((x) => x.sessionNo).sort(), [1, 2]);
   assert.ok(r.body.data.every((x) => x.sessionsThatDay === 2));
   assert.equal(new Set(r.body.data.map((x) => String(x._id))).size, 2, 'distinct rows');
   assert.ok(r.body.data.every((x) => x.checkIn && x.checkOut));
 });
 
-// ------------------------------------------- bridge debounce (pure, exact clock)
+// Bridge debounce (pure, exact clock)
 test('TapDebouncer: reader patterns with exact timestamps', () => {
   const d = new TapDebouncer(300);
-  // held card re-sending every 100 ms for 1.2 s = one tap
   const held = [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200].map((t) => d.observe('A', t).isNewTap);
   assert.deepEqual(held, [true, ...Array(12).fill(false)]);
-  // lifted for 350 ms, tapped again = new tap (and its own repeats are ignored)
   assert.equal(d.observe('A', 1550).isNewTap, true);
   assert.equal(d.observe('A', 1650).isNewTap, false);
-  // quick but deliberate: exactly at the window edge counts as new
   assert.equal(d.observe('A', 1950).isNewTap, true);
-  // another card at the same moment is independent
   assert.equal(d.observe('B', 1960).isNewTap, true);
-  // window 0 disables
   const off = new TapDebouncer(0);
   assert.deepEqual([off.observe('A', 0), off.observe('A', 1)].map((x) => x.isNewTap), [true, true]);
 });

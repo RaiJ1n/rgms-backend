@@ -1,8 +1,5 @@
 // utils/attendanceExportRows.js
-//
-// Row shaping for the attendance Excel export. Pure (no DB). One row per
-// attendance SESSION - never grouped by member. Only these columns are ever
-// exported: no email, phone, card UID/hash, tokens or other account data.
+// One row per attendance SESSION - never grouped by member
 const TZ = 'Asia/Manila';
 
 const COLUMNS = [
@@ -31,7 +28,7 @@ function manilaTime(d) {
   return new Date(d).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: TZ });
 }
 
-// Stops spreadsheet formula injection from names typed at the front desk.
+// Stops spreadsheet formula injection from names typed at the front desk
 function safeCell(v) {
   const s = v === null || v === undefined ? '' : String(v);
   return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;

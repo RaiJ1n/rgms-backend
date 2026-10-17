@@ -63,17 +63,10 @@ exports.summary = async (req, res, next) => {
     const everActiveUserIds = await Subscription.distinct('userId', { status: 'active', endDate: { $lt: now } });
     const expiredCount = everActiveUserIds.filter((id) => !activeUserIdSet.has(id.toString())).length;
 
-    // Section D3's fix (see utils/localDate.js) applied here too — this
-    // was still using raw new Date()/setHours(), the same server-
-    // timezone bug already found and fixed in attendanceService.js and
-    // rfidController.todayAttendance. Same failure mode: a UTC-
-    // configured server would misbucket late-night Manila attendance
-    // into the wrong day for this stat specifically.
+    // Section D3's fix (see utils/localDate.js) applied here too
+    // Section D3's fix (see utils/localDate.js) applied here too — this was still using raw new Date()/setHours()
     const todayStart = startOfLocalDay();
     const todayEnd = endOfLocalDay();
-    // "Today's visitors" is a headcount: a member who timed in twice today is
-    // ONE visitor (members can now have several sessions a day). Rows without
-    // a person (visitor pass / walk-in) each count once, as before.
     const todayMatch = { createdAt: { $gte: todayStart, $lte: todayEnd } };
     const [headcount] = await Attendance.aggregate([
       { $match: todayMatch },
@@ -81,7 +74,7 @@ exports.summary = async (req, res, next) => {
       { $count: 'n' },
     ]);
     const dailyAttendance = headcount ? headcount.n : 0;
-    const dailySessions = await Attendance.countDocuments(todayMatch); // every Time-In row
+    const dailySessions = await Attendance.countDocuments(todayMatch);
 
     // Most popular plan
     const popular = await Subscription.aggregate([
@@ -93,7 +86,6 @@ exports.summary = async (req, res, next) => {
       { $project: { count: 1, plan: '$plan.name' } }
     ]);
 
-    // Top 5 active members (by attendance)
     const topMembers = await Attendance.aggregate([
       { $group: { _id: '$userId', visits: { $sum: 1 } } },
       { $sort: { visits: -1 } },
@@ -128,12 +120,8 @@ exports.summary = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// C1 — Income Period Selector. Distinct from `summary` above: that one
-// is always "today" for the stat-card grid; this drives the period
-// toggle specifically, using Manila-local boundaries (never the
-// server's own timezone — see utils/localDate.js) and only counting
-// approved payments, same as every other revenue aggregation in this
-// file.
+// C1 — Income Period Selector
+// Distinct from `summary` above: that one is always "today" for the stat-card grid
 const PERIOD_LABELS = {
   today: "Today's Income",
   weekly: 'Weekly Income',
@@ -148,18 +136,10 @@ function resolvePeriodStart(period, now) {
   return startOfLocalDay(now);
 }
 
-// A membership "approaching expiration" — active subscriptions whose
-// endDate falls within the next N days. This is a snapshot metric (not
-// scoped to the Statistics page's period toggle), same as how
-// "Expiring Memberships" reads as a standalone fact rather than a
-// range total.
+// A membership "approaching expiration"
 const EXPIRING_SOON_DAYS = 7;
 
 // Statistics.vue's "Expiring Memberships" and "Membership Growth" cards
-// (previously "New members"/"Current member", driven by `summary`
-// above). Kept as its own endpoint rather than folded into `summary`
-// since `summary` is always "today" and growth needs to follow the
-// page's own Daily/Weekly/Monthly/Yearly period toggle.
 exports.membershipOverview = async (req, res, next) => {
   try {
     const period = ['today', 'weekly', 'monthly', 'yearly'].includes(req.query.period)
@@ -174,13 +154,8 @@ exports.membershipOverview = async (req, res, next) => {
       endDate: { $gte: now, $lte: soonCutoff },
     });
 
-    // Net change in distinct active members between the start of the
-    // selected period and now. "Active at instant X" is read off
-    // startDate/endDate coverage directly (a subscription document
-    // whose window spans X), not the `status` field alone — status can
-    // lag behind a passed endDate until a background job runs (see the
-    // same reasoning in attendanceService.js's processMemberScan), so
-    // date coverage is the authoritative signal here too.
+    // Net change in distinct active members between the start of the selected period and now
+    // "Active at instant X" is read off startDate/endDate coverage directly (a subscription document whose window spans X)
     const periodStart = resolvePeriodStart(period, now);
 
     const activeUserIdsNow = await Subscription.distinct('userId', {
@@ -207,21 +182,7 @@ exports.membershipOverview = async (req, res, next) => {
   }
 };
 
-// Statistics.vue's "Visitors" donut. Previously computed client-side
-// from the full /admin/members list split only by studentPromoActive
-// (Student vs "Regular") — that's a membership-roster split, not an
-// actual visitor count, and had no concept of non-member walk-ins at
-// all. This instead reads real check-ins for the selected period from
-// Attendance, using the same conventions the Dashboard's Member/
-// Non-member attendance pie already relies on:
-//   - subjectType: 'member' scopes to member-side attendance (excludes
-//     coach/employee check-ins, which live under subjectType: 'employee').
-//   - a record with `userId` set is a member check-in; `memberType`
-//     ('Student' vs 'Regular', set at check-in time — see
-//     attendanceService.js's processMemberScan) distinguishes Student
-//     from the new "Member" (regular, non-student) category.
-//   - a record with no `userId` (guestName only) is a walk-in — the
-//     new "Non-member" category.
+// Statistics.vue's "Visitors" donut
 exports.visitorsBreakdown = async (req, res, next) => {
   try {
     const period = ['today', 'weekly', 'monthly', 'yearly'].includes(req.query.period)
@@ -257,12 +218,7 @@ exports.visitorsBreakdown = async (req, res, next) => {
   }
 };
 
-// Dashboard Attendance bar chart + donut. Counts DISTINCT registered members
-// (by userId) per day / ISO week / month in Asia/Manila - a member with several
-// sessions in one bucket counts once. Sessions are returned separately. Visitor
-// passes and walk-ins are reported as `nonMembers`, never as members; employees
-// are excluded. Read-only: no attendance row is touched. See
-// services/attendanceAnalytics.js for the rules and the pipelines.
+// Dashboard Attendance bar chart + donut
 exports.attendanceUnique = async (req, res, next) => {
   try {
     const interval = attendanceAnalytics.INTERVALS.includes(req.query.interval) ? req.query.interval : 'day';

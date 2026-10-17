@@ -1,8 +1,5 @@
-// test/bridgeFlow.test.js - the REAL scripts/rfidBridge.js, run as a child
-// process against a fake serial reader (test/helpers/mockSerial.js) and a stub
-// HTTP API. Proves what the bridge does with reader timing: repeated signals,
-// taps arriving while a request is in flight, retries, and silent duplicates.
-// Real time (a few seconds in total); no hardware.
+// test/bridgeFlow.test.js - the REAL scripts/rfidBridge.js
+// Proves what the bridge does with reader timing: repeated signals, taps arriving while a request is in flight, retries
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -12,7 +9,7 @@ const { spawn } = require('node:child_process');
 const BRIDGE = path.join(__dirname, '..', 'scripts', 'rfidBridge.js');
 const MOCK = path.join(__dirname, 'helpers', 'mockSerial.js');
 
-// handler(req) -> { status, body, delayMs }   (called for POST /rfid/scan only)
+// handler(req) -> { status, body, delayMs } (called for POST /rfid/scan only)
 async function runScenario({ script, handler, debounceMs = 300, extraEnv = {}, settleMs = 1500 }) {
   const posts = [];
   let inFlight = 0; let maxInFlight = 0;
@@ -32,7 +29,7 @@ async function runScenario({ script, handler, debounceMs = 300, extraEnv = {}, s
         return json(out.status, out.body);
       }
       if (req.url.endsWith('/rfid/ping')) return json(200, { success: true, serverTime: new Date().toISOString() });
-      return json(200, { success: true, data: { registrationMode: false, binding: {} } }); // device-status
+      return json(200, { success: true, data: { registrationMode: false, binding: {} } });
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -78,8 +75,8 @@ test('bridge: a card held on the reader (signal every 100 ms for 1 s) is ONE req
 });
 
 test('bridge: held, lifted, tapped again = two requests with different scanIds', async () => {
-  const held = Array.from({ length: 6 }, (_, i) => [i * 100, 'A1B2C3D4']); // 0..500
-  const again = Array.from({ length: 4 }, (_, i) => [1100 + i * 100, 'A1B2C3D4']); // quiet 600 ms > 300
+  const held = Array.from({ length: 6 }, (_, i) => [i * 100, 'A1B2C3D4']);
+  const again = Array.from({ length: 4 }, (_, i) => [1100 + i * 100, 'A1B2C3D4']);
   let n = 0;
   const r = await runScenario({ script: [...held, ...again], handler: () => ok((n += 1) === 1 ? 'checkin' : 'checkout') });
   assert.equal(r.posts.length, 2);
@@ -88,8 +85,6 @@ test('bridge: held, lifted, tapped again = two requests with different scanIds',
 });
 
 test('bridge: four intentional taps arriving WHILE the server is slow are all sent, in order, one at a time', async () => {
-  // taps every 400 ms, but the server takes 900 ms per request: the old bridge
-  // dropped every tap that arrived mid-request ("PLEASE WAIT").
   const script = [0, 400, 800, 1200].map((t) => [t, 'A1B2C3D4']);
   const seq = ['checkin', 'checkout', 'checkin', 'checkout'];
   const r = await runScenario({
@@ -128,9 +123,8 @@ test('bridge: when every attempt fails the member sees a clear error, and the NE
 });
 
 test('bridge: a duplicate the server rejects is SHOWN (DUPLICATE / SCAN IGNORED), so the sketch is not left on "Reading card..."', async () => {
-  // The sketch shows "Reading card..." for every read it sends and waits for ANY
-  // reply; with no reply it falls back to "BRIDGE OFFLINE" after 15 s, which
-  // would be a false error. So a duplicate verdict must reach the LCD.
+  // The sketch shows "Reading card..." for every read it sends and waits for ANY reply
+  // So a duplicate verdict must reach the LCD
   const r = await runScenario({
     script: [[0, 'A1B2C3D4']],
     handler: () => ({ status: 429, body: { success: false, duplicate: true, silent: true, lcd: { line1: 'DUPLICATE', line2: 'SCAN IGNORED' } } }),

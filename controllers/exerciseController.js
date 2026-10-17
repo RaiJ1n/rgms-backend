@@ -1,10 +1,7 @@
 const { validationResult } = require('express-validator');
 const Exercise = require('../models/Exercise');
 
-// Every query here is scoped to req.coach._id (populated by
-// protectCoach — see coachRoutes.js) — a coach can only ever see, edit,
-// or delete their OWN exercises. Matches the exact ownership pattern
-// coachPortalController.js already uses for classes/requests/clients.
+// Every query here is scoped to req.coach._id (populated by protectCoach — see coachRoutes.js)
 
 const getMyExercises = async (req, res, next) => {
   try {
@@ -43,9 +40,7 @@ const updateExercise = async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ success: false, errors: errors.array() });
 
-    // Scoped to coachId in the query itself, not just checked after
-    // fetching — a coach can never even locate another coach's
-    // exercise by guessing an id, let alone modify it.
+    // Scoped to coachId in the query itself, not just checked after fetching
     const exercise = await Exercise.findOne({ _id: req.params.id, coachId: req.coach._id });
     if (!exercise) return res.status(404).json({ success: false, message: 'Exercise not found' });
 

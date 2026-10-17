@@ -49,7 +49,7 @@ function pickPayload(body) {
 }
 
 async function assertValidInstructor(instructorId) {
-  if (!instructorId) return; // unassigning is always fine
+  if (!instructorId) return;
   const coach = await User.findOne({ _id: instructorId, role: 'coach' }).select('isActive');
   if (!coach) {
     throw Object.assign(new Error('Selected instructor was not found'), { statusCode: 404 });

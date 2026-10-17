@@ -6,16 +6,7 @@ const CoachRegistrationRequest = require('../models/CoachRegistrationRequest');
 const Notification = require('../models/Notification');
 const socketUtil = require('../utils/socket');
 
-// ---------------------------------------------------------------------
-// Shared helper — Section E4's actual enforcement point.
-// ---------------------------------------------------------------------
-// Returns the set of client User ids this coach is actually allowed to
-// assign to (their own accepted clients — same query
-// coachPortalController.getMyClients already uses). createPlan/
-// updatePlan below check every id in the request's assignedTo against
-// this on the SERVER, so manually POSTing another coach's client id
-// is rejected regardless of what the frontend dropdown would have
-// allowed.
+// Shared helper — Section E4's actual enforcement point
 async function getEligibleClientIds(coachId) {
   const accepted = await CoachRegistrationRequest.find({ coachId, status: 'accepted' }).select('clientId');
   return new Set(accepted.map((r) => r.clientId.toString()));
@@ -32,9 +23,7 @@ async function assertAssignedToEligible(coachId, assignedTo) {
   }
 }
 
-// ---------------------------------------------------------------------
 // Coach-side (protectCoach) — mounted in coachRoutes.js
-// ---------------------------------------------------------------------
 
 const getMyPlans = async (req, res, next) => {
   try {
@@ -56,10 +45,7 @@ const createPlan = async (req, res, next) => {
 
     await assertAssignedToEligible(req.coach._id, assignedTo);
 
-    // Components can reference an exerciseId (pull name/sets/reps from
-    // the coach's own library) or be typed directly — either way the
-    // exercise, if referenced, must belong to this coach (same
-    // ownership check as exerciseController).
+    // Components can reference an exerciseId
     const resolvedComponents = await resolveComponents(req.coach._id, components);
 
     const plan = await WorkoutPlan.create({
@@ -113,9 +99,6 @@ const deletePlan = async (req, res, next) => {
   try {
     const plan = await WorkoutPlan.findOneAndDelete({ _id: req.params.id, coachId: req.coach._id });
     if (!plan) return res.status(404).json({ success: false, message: 'Workout plan not found' });
-    // Clean up any progress tracked against this plan — otherwise
-    // orphaned WorkoutPlanProgress rows sit around forever referencing
-    // a planId that no longer resolves to anything.
     await WorkoutPlanProgress.deleteMany({ planId: plan._id });
     res.json({ success: true, message: 'Workout plan deleted' });
   } catch (error) {
@@ -123,12 +106,7 @@ const deletePlan = async (req, res, next) => {
   }
 };
 
-// Validates/snapshots each component. If exerciseId is given, it must
-// belong to this coach (mirrors exerciseController's ownership check) —
-// a coach can't reference another coach's private exercise. If no
-// exerciseId is given, the component is still accepted as a one-off
-// typed entry (matches the existing free-text UI), just without a
-// library link.
+// Validates/snapshots each component
 async function resolveComponents(coachId, components) {
   if (!Array.isArray(components)) return [];
   const resolved = [];
@@ -153,9 +131,7 @@ async function resolveComponents(coachId, components) {
   return resolved;
 }
 
-// ---------------------------------------------------------------------
 // Member-side (protect) — mounted in userRoutes.js
-// ---------------------------------------------------------------------
 
 const getMyAssignedPlans = async (req, res, next) => {
   try {
@@ -193,10 +169,6 @@ const getMyAssignedPlanDetail = async (req, res, next) => {
 };
 
 // Merges a plan document with this member's progress into the same
-// { components: [{..., done, completedSets}], progress: percent } shape
-// ClientWorkoutSelection.vue / ClientExerciseView.vue already render
-// from their mock data — no frontend shape change needed beyond
-// swapping the data source.
 function attachProgress(plan, progressDoc) {
   const entriesByComponent = new Map((progressDoc?.entries || []).map((e) => [e.componentId.toString(), e]));
   const components = plan.components.map((c) => {
@@ -228,11 +200,7 @@ function attachProgress(plan, progressDoc) {
   };
 }
 
-// One tap = toggle a single set for one component; done is derived
-// server-side from completedSets vs the component's own `sets` count,
-// same rule ClientExerciseView.vue's toggleSet() already applies
-// client-side — kept identical so persisted state matches what the UI
-// shows before/after a reload.
+// One tap = toggle a single set for one component
 const updateProgress = async (req, res, next) => {
   try {
     const { componentId, completedSets, notes } = req.body;
@@ -248,22 +216,11 @@ const updateProgress = async (req, res, next) => {
 
     const done = completedSets.length >= component.sets;
 
-    // Section 12: "client starts/engages with an assigned workout" needs
-    // a real signal to fire on, not a separate unused "start" button the
-    // existing ClientExerciseView.vue flow doesn't have. The first-ever
-    // progress document for this (plan, member) pair — i.e. no prior
-    // WorkoutPlanProgress existed before this call — is that signal: it
-    // means this is the first set/exercise this client has ever marked
-    // on this plan. Checked BEFORE the upsert below, since the upsert
-    // itself would otherwise make "did it already exist" unanswerable.
     const isFirstActivityOnPlan = !(await WorkoutPlanProgress.exists({
       planId: plan._id,
       memberId: req.user._id,
     }));
 
-    // Preserve the existing note when this call doesn't include one
-    // (e.g. a "Mark Done" tap that isn't editing notes) rather than
-    // wiping it out on every set/done toggle.
     const existing = await WorkoutPlanProgress.findOne(
       { planId: plan._id, memberId: req.user._id, 'entries.componentId': componentId },
       { 'entries.$': 1 }
@@ -285,13 +242,8 @@ const updateProgress = async (req, res, next) => {
       { upsert: true }
     );
 
-    // Fire-and-forget, same pattern as authService.js's signup
-    // notification and studentIdController.js's submission notification
-    // — persisted (Section 12: "must not require the coach to be logged
-    // in at the exact moment... stored so the coach can see it when they
-    // return") via Notification.create, plus a best-effort real-time
-    // nudge if the coach happens to be online right now. A failure here
-    // must never fail the client's own progress save.
+    // Fire-and-forget, same pattern as authService.js's signup notification and studentIdController.js's
+    // Fire-and-forget, same pattern as authService.js's signup notification and studentIdController.js's submission
     if (isFirstActivityOnPlan) {
       Notification.create({
         type: 'workout_started',
@@ -311,9 +263,7 @@ const updateProgress = async (req, res, next) => {
   }
 };
 
-// Start a new daily session: archive current entries into history and
-// clear them so the workout becomes available again. History is
-// preserved; nothing is deleted.
+// Start a new daily session: archive current entries into history and clear them
 const resetDailyProgress = async (req, res, next) => {
   try {
     const plan = await WorkoutPlan.findOne({ _id: req.params.id, assignedTo: req.user._id });

@@ -1,15 +1,5 @@
 // services/tempCardService.js
-//
-// Temporary RFID cards for EXISTING MEMBERS who forgot their own card.
-// (Day-visitor passes live in visitorPassService / rfidController and are
-// untouched; this service only adds the member-loan side and a combined
-// inventory view.)
-//
-// A loan connects a spare card (RFIDCard cardType 'TEMPORARY') to an existing
-// member through a TempCardAssignment. It never creates a member, a
-// subscription or a visitor record, and it never modifies the member's
-// original card. Attendance on tap is processed by attendanceService, which
-// resolves the spare card to the member and applies the normal rules.
+// It never creates a member, a subscription or a visitor record, and it never modifies the member's original card
 const mongoose = require('mongoose');
 const RFIDCard = require('../models/RFIDCard');
 const Attendance = require('../models/Attendance');
@@ -40,8 +30,7 @@ const idOf = (v) => (v && v._id ? v._id : v);
 const sameId = (a, b) => a != null && b != null && String(idOf(a)) === String(idOf(b));
 const isObjectId = (v) => typeof v === 'string' && mongoose.Types.ObjectId.isValid(v) && /^[0-9a-fA-F]{24}$/.test(v);
 
-// Everything that arrives in a request body is untrusted: strings only, so a
-// payload like { "$ne": null } can never reach a query.
+// Everything that arrives in a request body is untrusted: strings only, so a payload like
 function cleanUid(raw, label) {
   if (typeof raw !== 'string' || !raw.trim()) throw httpError(`${label} is required`, 400);
   const uid = normalizeUid(raw);
@@ -49,13 +38,8 @@ function cleanUid(raw, label) {
   return uid;
 }
 
-// ----------------------------------------------------------------------------
-// Housekeeping - run before anything that reads or decides on loan state.
-// ----------------------------------------------------------------------------
-// 1. A loan whose day ended becomes EXPIRED. It STILL holds the physical card:
-//    the card is not available again until staff mark it returned.
-// 2. Heals the one possible drift: assignment closed (RETURNED/REVOKED/
-//    CANCELLED) but the card write that releases it was lost.
+// Housekeeping - run before anything that reads or decides on loan state
+// A loan whose day ended becomes EXPIRED
 async function releaseCard(cardId, assignmentId) {
   await RFIDCard.updateOne(
     { _id: cardId, memberAssignmentId: assignmentId },
@@ -78,9 +62,7 @@ async function sweepLoans(now = new Date()) {
   }
 }
 
-// ----------------------------------------------------------------------------
 // Presentation
-// ----------------------------------------------------------------------------
 function presentAssignment(a, extras = {}) {
   const o = a.toObject ? a.toObject() : a;
   const member = o.memberId && o.memberId.fullname ? o.memberId : null;
@@ -104,9 +86,7 @@ function presentAssignment(a, extras = {}) {
   };
 }
 
-// ----------------------------------------------------------------------------
 // Member search (issuance picker)
-// ----------------------------------------------------------------------------
 async function searchMembers(rawQuery, now = new Date()) {
   const q = typeof rawQuery === 'string' ? rawQuery.trim().slice(0, 60) : '';
   if (q.length < 2) return [];
@@ -140,9 +120,7 @@ async function searchMembers(rawQuery, now = new Date()) {
   return out;
 }
 
-// ----------------------------------------------------------------------------
 // Issue a spare card to a member
-// ----------------------------------------------------------------------------
 async function issueToMember({ memberId, tempUid, originalUid, originalNotPresent, adminId }, now = new Date()) {
   if (!isObjectId(memberId)) throw httpError('memberId is invalid', 400);
   const tempCardUid = cleanUid(tempUid, 'Temporary card UID');
@@ -152,8 +130,7 @@ async function issueToMember({ memberId, tempUid, originalUid, originalNotPresen
 
   await sweepLoans(now);
 
-  // 1. Eligibility - the SAME rules a tap on the member's own card uses.
-  //    Issuing a card never repairs an expired / inactive / suspended membership.
+  // 1
   const eligibility = await attendanceService.checkMemberEligibility(member, now);
   if (!eligibility.ok) {
     throw httpError(
@@ -162,17 +139,13 @@ async function issueToMember({ memberId, tempUid, originalUid, originalNotPresen
     );
   }
 
-  // 2. A spare card is for getting INTO the gym. If the member is already
-  //    inside (open session) there is nothing to issue; to leave they tap out.
-  //    Earlier completed sessions today do not matter - members may time in
-  //    again.
+  // 2
   const open = await memberAttendance.findOpenSession(member._id, now);
   if (open) {
     throw httpError(`${member.fullname} is already checked in`, 409, 'attendance_today_exists');
   }
 
-  // 3. One active loan per member (friendly message; the partial unique index
-  //    is the real guarantee).
+  // 3
   const existingLoan = await TempCardAssignment.findOne({ memberId: member._id, status: { $in: HOLDING } });
   if (existingLoan) {
     throw httpError(
@@ -183,7 +156,7 @@ async function issueToMember({ memberId, tempUid, originalUid, originalNotPresen
     );
   }
 
-  // 4. The member's registered ORIGINAL card. It is only read, never changed.
+  // 4
   const memberCards = await RFIDCard.find({ userId: member._id, active: true });
   if (!memberCards.length) {
     throw httpError(`${member.fullname} has no active registered RFID card. Register a card first.`, 409, 'no_original_card');
@@ -199,15 +172,14 @@ async function issueToMember({ memberId, tempUid, originalUid, originalNotPresen
     }
     originalVerifiedBy = 'scanned';
   } else if (originalNotPresent === true) {
-    // Staff confirmed the card is physically absent. The registered card is
-    // taken from the member's record and flagged as database-verified.
+    // Staff confirmed the card is physically absent
     originalCard = memberCards[0];
     originalVerifiedBy = 'database-record';
   } else {
     throw httpError('Scan the original card, or confirm that it is not present', 400, 'original_not_verified');
   }
 
-  // 5. The spare card: must be a spare (never a member/employee card) and free.
+  // 5
   let spare = await cardLookup.findByUid(tempCardUid);
   if (spare) {
     if (spare.cardType !== 'TEMPORARY') {
@@ -221,18 +193,16 @@ async function issueToMember({ memberId, tempUid, originalUid, originalNotPresen
       throw httpError('This card is currently assigned to a visitor pass', 409, 'card_unavailable');
     }
   } else {
-    // Unknown UID tapped by staff on purpose: it becomes a blank spare card.
     try {
       spare = await RFIDCard.create({ ...identityFor(tempCardUid), cardType: 'TEMPORARY', active: true });
     } catch (err) {
       if (!(err && err.code === 11000)) throw err;
-      spare = await cardLookup.findByUid(tempCardUid); // lost a creation race
+      spare = await cardLookup.findByUid(tempCardUid);
       if (!spare || spare.cardType !== 'TEMPORARY') throw httpError('This card cannot be used as a temporary card', 409, 'card_unavailable');
     }
   }
 
-  // 6. Create the assignment first: its unique indexes make a second loan for
-  //    this member (or a second holder for this card) fail atomically.
+  // 6
   const assignmentId = new mongoose.Types.ObjectId();
   let assignment;
   try {
@@ -245,7 +215,7 @@ async function issueToMember({ memberId, tempUid, originalUid, originalNotPresen
       status: 'ACTIVE',
       issuedBy: adminId,
       issuedAt: now,
-      expiresAt: endOfLocalDay(now), // end of today, Asia/Manila
+      expiresAt: endOfLocalDay(now),
     });
   } catch (err) {
     if (err && err.code === 11000) {
@@ -254,8 +224,7 @@ async function issueToMember({ memberId, tempUid, originalUid, originalNotPresen
     throw err;
   }
 
-  // 7. Claim the physical card atomically. The filter re-checks availability
-  //    inside the write, so a visitor pass and a loan can never both win.
+  // 7
   const claimed = await RFIDCard.findOneAndUpdate(
     { _id: spare._id, ...visitorPassService.availableFilter(now) },
     {
@@ -289,10 +258,7 @@ async function issueToMember({ memberId, tempUid, originalUid, originalNotPresen
   });
 }
 
-// ----------------------------------------------------------------------------
-// End a loan: return (card handed back) or revoke (stop it now, with a reason).
-// Neither touches the member's subscription or attendance history.
-// ----------------------------------------------------------------------------
+// End a loan
 async function endAssignment(assignmentId, { status, adminId, reason }, now = new Date()) {
   const ended = await TempCardAssignment.findOneAndUpdate(
     { _id: assignmentId, status: { $in: HOLDING } },
@@ -317,11 +283,7 @@ async function endAssignment(assignmentId, { status, adminId, reason }, now = ne
   return presentAssignment(ended, { tempCardRef: card && card.cardId, memberName: member ? member.fullname : undefined });
 }
 
-// Return by card (staff tap the card, or pick it from the inventory).
-// Works for both kinds of spare card:
-//   member loan   -> assignment RETURNED, card released
-//   visitor pass  -> only if the visitor is NOT currently inside; an unused
-//                    pass is cancelled so the card is free again
+// Return by card (staff tap the card, or pick it from the inventory)
 async function returnCard({ id, uid, adminId }, now = new Date()) {
   let card;
   if (id !== undefined) {
@@ -335,17 +297,14 @@ async function returnCard({ id, uid, adminId }, now = new Date()) {
   if (card.memberAssignmentId) {
     const loan = await TempCardAssignment.findById(card.memberAssignmentId);
     if (!loan || !HOLDING.includes(loan.status)) {
-      // The loan is already closed (double submit, stale screen, or a lost card
-      // write). The card is free, so heal the pointer and report it - this is a
-      // harmless no-op, not a conflict.
+      // The loan is already closed (double submit, stale screen, or a lost card write)
       await releaseCard(card._id, card.memberAssignmentId);
       return { alreadyAvailable: true, cardRef: card.cardId };
     }
     try {
       return await endAssignment(card.memberAssignmentId, { status: 'RETURNED', adminId }, now);
     } catch (err) {
-      // Lost a race with another return of the same card: if it is now closed
-      // as RETURNED, the outcome is exactly what the caller wanted.
+      // Lost a race with another return of the same card: if it is now closed as RETURNED
       if (err && err.errorType === 'not_active') {
         const latest = await TempCardAssignment.findById(card.memberAssignmentId);
         if (!latest || !HOLDING.includes(latest.status)) {
@@ -365,7 +324,7 @@ async function returnCard({ id, uid, adminId }, now = new Date()) {
   if (visitorPassService.RELEASED_STATUSES.includes(st)) {
     return { alreadyAvailable: true, cardRef: card.cardId };
   }
-  // PENDING / UPCOMING: issued but never used - cancel it, keep the record.
+  // PENDING / UPCOMING
   const cancelled = await RFIDCard.findOneAndUpdate(
     { _id: card._id, checkedInAt: null, active: true, memberAssignmentId: null },
     { $set: { active: false } },
@@ -389,15 +348,8 @@ async function revokeAssignment({ assignmentId, reason, adminId }, now = new Dat
   return endAssignment(assignmentId, { status: 'REVOKED', adminId, reason: r }, now);
 }
 
-// ----------------------------------------------------------------------------
-// Inventory: every spare card with its CURRENT state.
-//   AVAILABLE  nobody holds it
-//   ASSIGNED   issued (member loan, or visitor pass not yet used)
-//   IN_USE     the holder is currently checked in
-//   EXPIRED    a member loan whose day ended but the card is not back yet
-// How the last holder's use ended (checked out / revoked / returned) is
-// history, shown as lastOutcome on available cards - not a separate state.
-// ----------------------------------------------------------------------------
+// Inventory: every spare card with its CURRENT state
+// AVAILABLE nobody holds it ASSIGNED issued
 async function listInventory({ state, limit = 100 } = {}, now = new Date()) {
   await sweepLoans(now);
   const cards = await RFIDCard.find({ cardType: 'TEMPORARY' }).sort({ updatedAt: -1 }).limit(Math.min(200, Math.max(1, limit)));

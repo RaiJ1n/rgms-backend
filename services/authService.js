@@ -21,8 +21,6 @@ const registerUser = async ({ fullname, email, password, phone, address, privacy
     privacyNoticeAcknowledgedAt: privacyNoticeAcknowledged ? new Date() : undefined,
   });
 
-  // Fire-and-forget for the admin notification bell — a failure here
-  // shouldn't block registration itself.
   Notification.create({
     type: 'signup',
     message: `${user.fullname} just signed up`,
@@ -31,9 +29,6 @@ const registerUser = async ({ fullname, email, password, phone, address, privacy
     .then((notification) => socketUtil.emitToAdmins('notification:new', notification))
     .catch((err) => console.error('Failed to create signup notification:', err.message));
 
-  // A new signup moves member-count stats (Statistics.vue's visitor
-  // breakdown, admin member totals) — 'stats:refresh' just tells any open
-  // admin dashboard "refetch when convenient", it carries no payload.
   socketUtil.emitToAdmins('stats:refresh');
 
   const token = generateToken({ id: user._id });
@@ -56,13 +51,8 @@ const loginUser = async ({ email, password }) => {
   return { user, token };
 };
 
-// Called from authController.logout, which runs behind `protect` so
-// req.user is available. Bumping tokenVersion means the token that was
-// just used to make this very request — and any other token issued
-// before this moment — stops passing the check in authMiddleware/
-// coachAuthMiddleware immediately, regardless of its 7-day expiry.
-// This is the actual server-side "log out everywhere" the frontend
-// clearing localStorage alone can't provide.
+// Called from authController.logout, which runs behind `protect` so req.user is available
+// Bumping tokenVersion means the token that was just used to make this very request
 const logoutUser = async (userId) => {
   await User.findByIdAndUpdate(userId, { $inc: { tokenVersion: 1 } });
 };
@@ -70,19 +60,14 @@ const logoutUser = async (userId) => {
 const createForgotPasswordOtp = async (user) => {
   const { otp, hashedOtp } = generateOtp();
   user.forgotPasswordOtp = hashedOtp;
-  // Shorter-lived than the old link (was 60 min) — a 6-digit code is
-  // guessable in a way a 32-byte token isn't, so it shouldn't stay valid
-  // as long. Matches the existing passwordChangeOtp convention.
+  // Shorter-lived than the old link (was 60 min)
+  // Shorter-lived than the old link (was 60 min) — a 6-digit code is guessable in a way a 32-byte token isn't
   user.forgotPasswordOtpExpires = Date.now() + 10 * 60 * 1000;
   await user.save();
   return otp;
 };
 
-// Checks the code without consuming it, so the "Enter code" screen can
-// confirm validity before the user has typed a new password. resetPassword
-// below re-runs this same check (and only it clears the code on success),
-// so a code that's merely been *verified* but never used to actually
-// reset anything is still rejected once it expires.
+// Checks the code without consuming it
 const verifyForgotPasswordOtp = async ({ email, otp }) => {
   const hashedOtp = hashOtp(otp);
   const user = await User.findOne({
@@ -99,20 +84,18 @@ const resetPassword = async ({ email, otp, password }) => {
   user.password = password;
   user.forgotPasswordOtp = undefined;
   user.forgotPasswordOtpExpires = undefined;
-  // Anyone else holding a token issued before this reset (e.g. the
-  // account was compromised, which is often why a reset happens)
-  // shouldn't stay logged in past it.
+  // Anyone else holding a token issued before this reset
   user.tokenVersion = (user.tokenVersion || 0) + 1;
   await user.save();
   return user;
 };
 
-// ---- Email verification ----
+// Email verification
 
 const createVerificationToken = async (user) => {
   const { verificationToken, hashedToken } = generateVerificationToken();
   user.verificationToken = hashedToken;
-  user.verificationTokenExpires = Date.now() + 24 * 60 * 60 * 1000; // 24h
+  user.verificationTokenExpires = Date.now() + 24 * 60 * 60 * 1000;
   await user.save();
   return verificationToken;
 };

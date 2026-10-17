@@ -1,4 +1,3 @@
-// run with: node --test test/deviceAuth.test.js  (no database needed)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { requireDeviceKey } = require('../middleware/deviceAuthMiddleware');

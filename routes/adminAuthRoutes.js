@@ -16,11 +16,6 @@ router.post(
   adminAuthController.registerAdmin
 );
 
-// Admin login now goes through the single unified endpoint at
-// POST /api/auth/login (authController.login). It authenticates against
-// the same User collection admins already live in and returns the
-// account's role, so the frontend can route to the right dashboard
-// without a separate admin-only login endpoint to keep in sync.
-// Route intentionally removed — do not re-add a parallel login path here.
+// Admin login now goes through the single unified endpoint at the same User collection admins already
 
 module.exports = router;

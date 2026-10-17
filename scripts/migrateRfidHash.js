@@ -1,52 +1,25 @@
 // scripts/migrateRfidHash.js
-//
-// Moves EXISTING RFID cards onto keyed UID hashing (utils/uidHash.js).
-// Run on the VPS, from the backend folder, with the production .env loaded.
-//
-//   node scripts/migrateRfidHash.js                  # DRY RUN: reports only, writes nothing
-//   node scripts/migrateRfidHash.js --apply          # step 1: add uidHash to every card
-//                                                    #         (cardId stays raw — fully reversible)
-//   node scripts/migrateRfidHash.js --apply --redact --i-have-a-backup
-//                                                    # step 2: replace the raw UID in cardId with
-//                                                    #         the opaque CARD-XXXXXXXXXXXX reference
-//
-// Recommended order:
-//   1. Back up the database.  2. Set RFID_HASH_SECRET (32+ random chars) in the
-//   VPS .env and restart.  3. --apply.  4. Tap a few real cards, confirm
-//   attendance still works.  5. Only then --redact.
-//
-// After --redact the raw UIDs are gone from the cards collection and CANNOT be
-// recovered — and the hashes only mean something while RFID_HASH_SECRET is
-// unchanged. Keep a copy of the secret outside the server; if it is lost, every
-// card has to be re-bound.
-//
-// Not touched: old AuditLog entries and attendance history that already contain
-// raw UIDs in their `meta`. Those are history; scrub them separately if your
-// policy requires it.
+// scripts/migrateRfidHash.js Moves EXISTING RFID cards onto keyed UID hashing (utils/uidHash.js)
 const path = require('path');
 try {
   require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 } catch {
-  /* dotenv optional */
 }
 const { hashUid, refFromHash, isEnabled } = require('../utils/uidHash');
 const { isValidUid } = require('../utils/normalizeUid');
 
-/**
- * Pure-ish core (takes the model) so it can be tested without a database.
- * Returns a report; throws on any condition that must stop the migration.
- */
+// Pure-ish core (takes the model) so it can be tested without a database
+// Returns a report; throws on any condition that must stop the migration
 async function migrate({ RFIDCard, apply = false, redact = false, log = console.log }) {
   if (!isEnabled()) {
     throw new Error('RFID_HASH_SECRET is not set (or shorter than 16 characters). Nothing to do — set it first.');
   }
   if (redact && !apply) throw new Error('--redact requires --apply.');
 
-  // select('+uidHash'): the field is select:false by default.
   const cards = await RFIDCard.find({}).select('+uidHash');
   const report = { total: cards.length, alreadyHashed: 0, toHash: 0, skippedInvalid: [], redacted: 0, collisions: [] };
 
-  const seen = new Map(); // uidHash -> cardId, to catch two cards with the same UID
+  const seen = new Map();
   for (const c of cards) {
     const alreadyOpaque = /^CARD-[0-9A-F]{12}$/.test(c.cardId);
     const hash = c.uidHash || (alreadyOpaque ? null : hashUid(c.cardId));
