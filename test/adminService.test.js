@@ -1,10 +1,5 @@
-// test/adminService.test.js - regression guard for services/adminService.js.
-//
-// Why this exists: adminService.js was once accidentally overwritten with
-// attendance-service code. Nothing failed until a real admin action ran,
-// because no test imported it. These tests fail immediately if that happens
-// again (wrong exports) and exercise the real call paths over the in-memory
-// model store (application logic only - NOT MongoDB behaviour).
+// test/adminService.test.js - regression guard for services/adminService.js
+// Why this exists: adminService.js was once accidentally overwritten with attendance-service code
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -16,7 +11,7 @@ const { install } = require('./helpers/fakeStore');
 const User = require('../models/User');
 
 const users = [];
-// Stand-in for the schema's bcrypt matchPassword (plain equality is enough here).
+// Stand-in for the schema's bcrypt matchPassword (plain equality is enough here)
 install(User, users, { isActive: true, role: 'user', matchPassword(p) { return Promise.resolve(p === this.password); } });
 
 const emailService = require('../services/emailService');
@@ -76,12 +71,12 @@ test('ensureDefaultAdmin: silent when unset, creates the first admin once, never
     assert.equal(users[0].role, 'admin');
     assert.equal(users[0].email, 'boss@x.test');
 
-    await adminService.ensureDefaultAdmin(); // idempotent
+    await adminService.ensureDefaultAdmin();
     assert.equal(users.length, 1);
 
     reset();
     process.env.ADMIN_PASSWORD = 'short';
-    await adminService.ensureDefaultAdmin(); // too short -> skipped
+    await adminService.ensureDefaultAdmin();
     assert.equal(users.length, 0);
   } finally {
     for (const k of ['ADMIN_EMAIL', 'ADMIN_PASSWORD', 'ADMIN_FULLNAME']) { if (keep[k] === undefined) delete process.env[k]; else process.env[k] = keep[k]; }

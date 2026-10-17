@@ -1,13 +1,7 @@
 let io = null;
 const clientOrigins = require('../config/clientOrigins');
 
-// Room naming:
-//   - `user:<id>` — every connected socket joins its own room, so any
-//     controller can push an update to exactly one member/admin
-//     (e.g. "your payment was approved") without broadcasting to everyone.
-//   - `admins` — every connected admin also joins this shared room, used
-//     for things every admin session should see (notification bell,
-//     live attendance feed, dashboard refresh pings, RFID scan events).
+// Room naming: - `user:<id>`
 exports.init = (server) => {
   try {
     const { Server } = require('socket.io');
@@ -16,12 +10,7 @@ exports.init = (server) => {
 
     io = new Server(server, { cors: { origin: clientOrigins, methods: ['GET', 'POST'] } });
 
-    // Any authenticated user (member or admin) may connect — each only
-    // ever receives events addressed to their own `user:<id>` room, plus
-    // `admins` if their role qualifies. CORS restricts which *browser*
-    // origins can connect, but a raw WebSocket client (curl, Postman, a
-    // script) ignores CORS entirely — so the handshake itself still needs
-    // to check for a real JWT, the same as any other protected route.
+    // Any authenticated user (member or admin) may connect
     io.use(async (socket, next) => {
       try {
         const token = socket.handshake.auth && socket.handshake.auth.token;
@@ -40,8 +29,7 @@ exports.init = (server) => {
         socket.user = user;
         next();
       } catch (err) {
-        // This is what was silently swallowing bad/expired tokens before —
-        // now it actually tells you why a connection was rejected.
+        // This is what was silently swallowing bad/expired tokens before
         console.warn('[SOCKET] Rejected connection:', err.message);
         next(new Error('Not authorized'));
       }
@@ -53,9 +41,7 @@ exports.init = (server) => {
       if (isAdmin) {
         socket.join('admins');
       }
-      // This line is the key diagnostic: it tells you definitively whether
-      // a given connection actually landed in the `admins` room (and
-      // therefore will receive rfid:scanned/rfid:status/etc.) or not.
+      // This line is the key diagnostic
       console.log(
         `[SOCKET] Connected: ${socket.user.fullname} (${socket.user._id}), role=${socket.user.role}, joined admins room=${isAdmin}`
       );
@@ -73,11 +59,7 @@ exports.init = (server) => {
 
 exports.getIO = () => io;
 
-// ---- Emit helpers ----
-// Controllers/services call these instead of reaching into getIO()
-// directly, so a socket-less environment (io still initializing, or the
-// package genuinely missing) never turns a request into a 500 — the
-// real-time push is best-effort on top of the normal HTTP response.
+// Emit helpers Controllers/services call these instead of reaching into getIO() directly
 
 exports.emitToAdmins = (event, payload) => {
   if (io) io.to('admins').emit(event, payload);

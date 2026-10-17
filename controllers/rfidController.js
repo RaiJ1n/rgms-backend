@@ -21,8 +21,6 @@ const attendanceExport = require('../utils/attendanceExportRows');
 exports.registerCard = async (req, res, next) => {
   try {
     const { userId, coachId } = req.body;
-    // Accept `uid` as an alias — some hardware/clients send { uid }
-    // while the documented contract is { cardId }.
     const rawCardId = req.body.cardId ?? req.body.uid;
 
     if (!rawCardId) {
@@ -44,9 +42,6 @@ exports.registerCard = async (req, res, next) => {
       });
     }
 
-    // Normalize on BIND side (same util as SCAN side): strips spaces,
-    // dashes, colons, trims \r\n, uppercases. "A1 B2 C3 D4" and
-    // "a1b2c3d4" both bind as "A1B2C3D4".
     const cardId = normalizeUid(rawCardId);
     console.log(`[RFID] Bind request — incoming: ${logUid(rawCardId)} → normalized: ${logUid(cardId)}`);
 
@@ -58,15 +53,13 @@ exports.registerCard = async (req, res, next) => {
       });
     }
 
-    // Check if card already registered (normalized, so "A1 B2 C3 D4"
-    // can never silently duplicate "A1B2C3D4"). An existing document only
-    // blocks the bind when it is a REAL assignment - see services/rfidBinding.js.
+    // Check if card already registered
     const existing = await cardLookup.findByUid(cardId);
     let reclaimable = null;
     if (existing) {
       const kind = await rfidBinding.classifyExisting(existing, { userId, coachId });
       if (kind === rfidBinding.KIND.SAME) {
-        // Idempotent: the bridge auto-bind may have created it a moment ago.
+        // Idempotent
         return res.status(200).json({
           success: true,
           alreadyBound: true,
@@ -81,7 +74,6 @@ exports.registerCard = async (req, res, next) => {
       reclaimable = existing;
     }
 
-    // Verify the owner exists in the right collection
     let ownerName;
     if (userId) {
       const user = await User.findById(userId);
@@ -93,13 +85,12 @@ exports.registerCard = async (req, res, next) => {
       ownerName = coach.fullname;
     }
 
-    // Create RFID card document (or re-point an orphan left by a deleted owner)
     let card;
     if (reclaimable) {
       card = await rfidBinding.reclaimOrphan(reclaimable, { userId, coachId, adminId: req.user._id, via: 'register' });
     } else {
       card = new RFIDCard({
-        ...identityFor(cardId), // opaque reference + keyed hash when RFID_HASH_SECRET is set
+        ...identityFor(cardId),
         userId: userId || undefined,
         coachId: coachId || undefined,
         active: true,
@@ -108,8 +99,7 @@ exports.registerCard = async (req, res, next) => {
       try {
         await card.save();
       } catch (saveErr) {
-        // Lost a race with the bridge/serial auto-bind for the same tap: the
-        // unique index fired. Re-read and answer from what is really stored.
+        // Lost a race with the bridge/serial auto-bind for the same tap: the unique index fired
         if (saveErr && saveErr.code === 11000) {
           const raced = await cardLookup.findByUid(cardId);
           if (raced) {
@@ -130,17 +120,14 @@ exports.registerCard = async (req, res, next) => {
       }
     }
 
-    // Audit log (reclaimOrphan already wrote its own, richer entry)
     if (!reclaimable) {
       await AuditLog.create({
         action: 'rfid_register',
-        userId: req.user._id, // Admin who registered
+        userId: req.user._id,
         meta: { cardId: card.cardId, ownerId: userId || coachId, ownerType: userId ? 'member' : 'employee' },
       });
     }
 
-    // Notify member (if Socket.IO connected) — employees don't have a
-    // member-side session to notify, so this only fires for userId.
     if (userId) {
       socketUtil.emitToUser(userId, 'rfid:updated', {
         bound: true,
@@ -148,7 +135,6 @@ exports.registerCard = async (req, res, next) => {
         active: card.active,
       });
     }
-    // All admins (drives the bind modal + any serial bridge relay).
     socketUtil.emitToAdmins('rfid:bound', {
       cardId: card.cardId,
       ownerId: userId || coachId,
@@ -158,14 +144,8 @@ exports.registerCard = async (req, res, next) => {
 
     console.log(`[RFID] Card registered: ${cardId} → ${ownerName}`);
 
-    // Push the binding result to the physical LCD when a serial reader is
-    // attached to THIS backend instance. Without this, a successful bind
-    // left the LCD sitting on the earlier "Card detected" ack with no
-    // confirmation. No-op when no serial port is open (e.g. VPS
-    // deployment — see scripts/rfidBridge.js, which relays the `rfid:bound`
-    // socket event to its local Arduino instead).
     rfidService.sendToArduino(`RFID BOUND|${card.cardId.slice(0, 16)}`);
-    // Split deployment: the bridge polls /device-status and shows this on its LCD.
+    // Split deployment
     rfidService.noteBound(card.cardId, userId || coachId);
 
     res.status(201).json({
@@ -184,23 +164,17 @@ exports.listCards = async (req, res, next) => {
     const { limit = 10 } = req.query;
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
 
-    // Visitor passes have their own list (GET /temporary); keep them out of
-    // the member/employee card list. `$ne` (not `=== 'MEMBER'`) so cards
-    // created before cardType existed are still returned.
     const filter = { cardType: { $ne: 'TEMPORARY' } };
 
-    // Optional search by owner name or card UID. A non-string (?search[$ne]=x)
-    // is ignored, never passed to Mongo.
+    // Optional search by owner name or card UID
+    // A non-string (?search[$ne]=x) is ignored, never passed to Mongo
     const rawSearch = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 60) : '';
     if (rawSearch) {
       const or = [];
-      // Owner name (members and coaches are both Users).
       const owners = await User.find({ fullname: new RegExp(escapeRegex(rawSearch), 'i') }).select('_id').limit(200);
       const ownerIds = owners.map((o) => o._id);
       if (ownerIds.length) or.push({ userId: { $in: ownerIds } }, { coachId: { $in: ownerIds } });
-      // Card UID: partial match on a stored raw UID (separators/case ignored),
-      // the opaque CARD-XXXX reference as shown in the list, and - when UID
-      // hashing is on - an exact match of a full UID against its keyed hash.
+      // Card UID
       const uid = normalizeUid(rawSearch);
       const refText = rawSearch.toUpperCase();
       if (uid) or.push({ cardId: new RegExp(escapeRegex(uid)) });
@@ -228,12 +202,7 @@ const attendanceService = require('../services/attendanceService');
 const { getScanMessage } = require('../utils/scanMessages');
 const { startOfLocalDay, endOfLocalDay, formatLocalDateLabel } = require('../utils/localDate');
 
-// Auto-bind a tap captured in binding mode when the admin already picked an
-// owner (EditMember bind modal). Mirrors rfidService.handleRFIDData's serial
-// auto-bind so the REST/bridge path binds WITHOUT depending on the browser's
-// socket round-trip (rfid:scanned → POST /register). If the browser also
-// POSTs /register it converges: "already assigned to this account" is
-// treated as success by EditMember.vue.
+// Auto-bind a tap captured in binding mode when the admin already picked an owner
 async function autoBindCaptured(cardId, session) {
   const ownerId = session.userId || session.coachId;
   const ownerType = session.userId ? 'member' : 'employee';
@@ -285,7 +254,7 @@ async function autoBindCaptured(cardId, session) {
         assignedAt: new Date(),
       });
     } catch (e) {
-      // The browser's POST /register won the race for the same tap.
+      // The browser's POST /register won the race for the same tap
       if (e && e.code === 11000) {
         const raced = await cardLookup.findByUid(cardId);
         if (raced && (await rfidBinding.classifyExisting(raced, { userId: session.userId, coachId: session.coachId })) === rfidBinding.KIND.SAME) {
@@ -311,7 +280,6 @@ async function autoBindCaptured(cardId, session) {
 
 exports.scanCard = async (req, res, next) => {
   try {
-    // Accept `uid` alias (hardware often sends { uid }) alongside { cardId }.
     const rawCardId = req.body.cardId ?? req.body.uid;
     if (!rawCardId) {
       return res.status(400).json({ success: false, message: 'cardId is required' });
@@ -320,8 +288,7 @@ exports.scanCard = async (req, res, next) => {
     const source = req.headers['x-bridge-id'] || req.ip;
     console.log(`[RFID] REST scan — source: ${source} — incoming: ${logUid(rawCardId)} → normalized: ${logUid(cardId)}`);
 
-    // A tap that is not a real hex UID (stray serial text, debug lines) must
-    // never be broadcast as a "detected card" nor reach the binding UI.
+    // A tap that is not a real hex UID
     if (!isValidUid(cardId)) {
       const msg = getScanMessage('invalid_format');
       console.log(`[RFID] REST scan rejected — not a valid UID: "${String(rawCardId).trim().slice(0, 40)}"`);
@@ -333,10 +300,6 @@ exports.scanCard = async (req, res, next) => {
       });
     }
 
-    // Binding-mode router (mirrors the serial path in
-    // services/rfidService.js handleRFIDData): while an admin has binding
-    // mode enabled, a tap is a registration candidate — NOT an attendance
-    // scan.
     const status = rfidService.getStatus();
     if (status.registrationMode) {
       socketUtil.emitToAdmins('rfid:scanned', { cardId, at: new Date() });
@@ -366,8 +329,8 @@ exports.scanCard = async (req, res, next) => {
       });
     }
 
-    // One physical tap = one scanId (generated by the bridge). A retry of the
-    // same tap reuses it, so a lost response can never turn into a second action.
+    // One physical tap = one scanId (generated by the bridge)
+    // A retry of the same tap reuses it, so a lost response can never turn into a second action
     const scanId = cleanScanId(req.body.scanId ?? req.headers['x-scan-id'] ?? req.headers['idempotency-key']);
     const outcome = await scanDedup.once(scanId, () => runAttendanceScan(cardId, scanId));
     return res.status(outcome.status).json(outcome.body);
@@ -376,24 +339,19 @@ exports.scanCard = async (req, res, next) => {
   }
 };
 
-// Device-supplied ids are kept short and boring; anything else is ignored
-// rather than failing the tap.
+// Device-supplied ids are kept short and boring; anything else is ignored rather than failing the tap
 function cleanScanId(raw) {
   if (raw === undefined || raw === null || raw === '') return undefined;
   const v = String(raw).trim();
   return /^[A-Za-z0-9_.:-]{8,90}$/.test(v) ? v : undefined;
 }
 
-// Runs ONE attendance tap and returns the finished HTTP outcome
-// ({status, body}). Business denials (unknown card, expired plan, duplicate
-// signal...) are outcomes, not exceptions; anything unexpected is rethrown so
-// it is reported as a real failure and is not remembered by scanDedup.
+// Runs ONE attendance tap and returns the finished HTTP outcome ({status, body})
+// Business denials (unknown card, expired plan, duplicate signal...) are outcomes, not exceptions
 async function runAttendanceScan(cardId, scanId) {
   try {
     const { action, attendance, user, replayed } = await attendanceService.processScan(cardId, { scanId });
 
-    // Same message map the Arduino LCD reads from (utils/scanMessages.js)
-    // - this REST endpoint says exactly what a member sees on the reader.
     const msg = getScanMessage(action === 'checkin' ? 'success_checkin' : 'success_checkout');
     const eventTime = (action === 'checkin' ? attendance.checkIn : attendance.checkOut) || new Date();
 
@@ -410,7 +368,6 @@ async function runAttendanceScan(cardId, scanId) {
       },
     };
   } catch (err) {
-    // errors thrown by processScan already carry statusCode + a clean message
     if (!err.statusCode) throw err;
     const msg = getScanMessage(err.errorType);
     const isRepeat = err.errorType === 'duplicate_signal';
@@ -422,18 +379,15 @@ async function runAttendanceScan(cardId, scanId) {
         message: msg.title,
         detail: msg.body,
         lcd: { line1: msg.lcdLine1, line2: msg.lcdLine2 },
-        // A repeated reader signal for a tap that was already handled: the
-        // reader/bridge must NOT repaint its display (it would overwrite the
-        // TIME IN / TIME OUT confirmation still being read).
+        // A repeated reader signal for a tap that was already handled
         ...(isRepeat ? { duplicate: true, silent: true } : {}),
       },
     };
   }
 }
 
-// Adds a reliable `attendanceType` (MEMBER | VISITOR | EMPLOYEE | GUEST) to a
-// row: the stored field when present, otherwise derived server-side for rows
-// written before the field existed. The frontend never has to guess.
+// Adds a reliable `attendanceType` (MEMBER | VISITOR | EMPLOYEE | GUEST) to a row: the stored field
+// The frontend never has to guess
 function withAttendanceType(doc) {
   const o = doc.toObject ? doc.toObject() : doc;
   return { ...o, attendanceType: Attendance.resolveType(o, o.rfidCardId) };
@@ -441,8 +395,7 @@ function withAttendanceType(doc) {
 
 exports.getLogs = async (req, res, next) => {
   try {
-    // Every attendance SESSION is one row - this never groups by member/day.
-    // Filter building is shared with the Excel export (attendanceQueryService).
+    // Every attendance SESSION is one row - this never groups by member/day
     const built = await attendanceQuery.buildLogFilter(req.query);
     if (!built.ok) return res.status(400).json({ success: false, message: built.message });
     const filter = built.filter;
@@ -453,7 +406,6 @@ exports.getLogs = async (req, res, next) => {
     const skip = (pageNum - 1) * limitNum;
     const dir = req.query.sort === 'asc' ? 1 : -1;
 
-    // Populate both possible owner fields; only one is ever set per document.
     const logs = await Attendance.find(filter)
       .populate('userId', 'fullname email phone')
       .populate('coachId', 'fullname email')
@@ -480,9 +432,7 @@ exports.getLogs = async (req, res, next) => {
   }
 };
 
-// Exports EVERY attendance session matching the table's filters (not just one
-// page) as .xlsx. Rows are read through a cursor in batches of 500. Above
-// ATTENDANCE_EXPORT_MAX it refuses instead of truncating.
+// Exports EVERY attendance session matching the table's filters (not just one page) as .xlsx
 const ATTENDANCE_EXPORT_MAX = 50000;
 exports.exportLogs = async (req, res, next) => {
   try {
@@ -503,19 +453,15 @@ exports.exportLogs = async (req, res, next) => {
     const dir = req.query.sort === 'asc' ? 1 : -1;
     const filename = attendanceExport.fileName(req.query.startDate, req.query.endDate);
 
-    // Built with the regular (buffered) ExcelJS Workbook - the same approach as
-    // Payment History's export. ExcelJS's streaming WorkbookWriter (exceljs 3.x
-    // + archiver 4) wrote every workbook part except the sheet as 0 bytes,
-    // which is what made Excel report the file as corrupt. Buffering also means
-    // any failure happens BEFORE headers are sent, so an error is a real JSON
-    // response and never a half-written .xlsx.
+    // Built with the regular (buffered) ExcelJS Workbook - the same approach as Payment History's export
+    // Buffering also means any failure happens BEFORE headers are sent
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Attendance', { views: [{ state: 'frozen', ySplit: 1 }] });
     sheet.columns = attendanceExport.COLUMNS.map((c) => ({ width: c.width }));
     const head = sheet.addRow(attendanceExport.COLUMNS.map((c) => c.header));
     head.font = { bold: true };
 
-    // Only names are populated: no email/phone/card data ever reaches the file.
+    // Only names are populated
     const cursor = Attendance.find(built.filter)
       .populate('userId', 'fullname')
       .populate('coachId', 'fullname')
@@ -560,7 +506,7 @@ exports.todayAttendance = async (req, res, next) => {
       .populate('userId', 'fullname email phone')
       .populate('coachId', 'fullname email')
       .populate('rfidCardId', 'cardType')
-      .sort({ checkIn: 1 }); // Sort by check-in time
+      .sort({ checkIn: 1 });
 
     const data = await history.decorate(logs.map(withAttendanceType));
 
@@ -588,13 +534,10 @@ exports.getStatus = async (req, res, next) => {
   }
 };
 
-// Minimal binding-mode status for the serial bridge (device-key auth, no
-// admin JWT). See the route comment in routes/rfidRoutes.js for why this
-// exists separately from getStatus.
+// Minimal binding-mode status for the serial bridge (device-key auth, no admin JWT)
 exports.getDeviceStatus = async (req, res, next) => {
   try {
-    // Heartbeat: every bridge poll proves the bridge PC is alive and that
-    // its device key is accepted. Surfaced to admins as `bridgeConnected`.
+    // Heartbeat
     rfidService.noteBridgeSeen({
       id: req.headers['x-bridge-id'] || null,
       version: req.headers['x-bridge-version'] || null,
@@ -614,9 +557,7 @@ exports.getDeviceStatus = async (req, res, next) => {
   }
 };
 
-// Device-key connectivity probe used by scripts/rfidDiagnose.js and the
-// bridge start-up self-test. Proves: DNS + TLS + Nginx + Express + device
-// key + backend mode, without touching attendance or card data.
+// Device-key connectivity probe used by scripts/rfidDiagnose.js and the bridge start-up self-test
 exports.ping = (req, res) => {
   const status = rfidService.getStatus();
   res.json({
@@ -671,10 +612,7 @@ exports.setRegistrationMode = async (req, res, next) => {
   try {
     const body = typeof req.body === 'object' && req.body !== null ? req.body : {};
     const enabled = body.enabled;
-    // Optional binding context: which flow + which pre-selected owner.
-    // EditMember bind modal sends { enabled:true, mode:'bind', userId };
-    // the Register page sends { enabled:true, mode:'register' } and updates
-    // userId/coachId later once an owner is picked (capture-only until then).
+    // Optional binding context
     const mode = body.mode === 'bind' ? 'bind' : 'register';
     const userId = body.userId || null;
     const coachId = body.coachId || null;
@@ -829,10 +767,7 @@ exports.reassignCard = async (req, res, next) => {
   }
 };
 
-// Unbind (fully remove) an RFID card so the old UID no longer
-// authenticates anyone. DELETE /api/rfid/:cardId (admin only).
-// Distinct from deactivate (which keeps the row, active=false):
-// unbind deletes the RFIDCard document and verifies removal.
+// Unbind (fully remove) an RFID card so the old UID no longer authenticates anyone
 exports.unbindCard = async (req, res, next) => {
   try {
     const cardId = cardLookup.paramToRef(req.params.cardId);
@@ -841,8 +776,8 @@ exports.unbindCard = async (req, res, next) => {
     if (!card) {
       return res.status(404).json({ success: false, message: 'Card not found' });
     }
-    // UNBIND has its own rules: it detaches a MEMBER/EMPLOYEE card. A visitor
-    // pass is not bound to anyone — it is revoked (history is kept), never deleted.
+    // UNBIND has its own rules: it detaches a MEMBER/EMPLOYEE card
+    // A visitor pass is not bound to anyone — it is revoked (history is kept), never deleted
     if (card.cardType === 'TEMPORARY') {
       return res.status(400).json({ success: false, message: 'This is a visitor pass. Revoke it from the Visitor Passes page instead.' });
     }
@@ -862,17 +797,12 @@ exports.unbindCard = async (req, res, next) => {
   }
 };
 
-// ---------------------------------------------------------------------------
 // Visitor / temporary passes (valid for one Manila-local day)
-// ---------------------------------------------------------------------------
 const MAX_PASS_DAYS_AHEAD = 30;
 
-// Status / availability rules live in services/visitorPassService.js so the
-// scan flow, this controller and the repair script all agree.
+// Status / availability rules live in services/visitorPassService.js so the scan flow
 const { passStatus, presentPass, availableFilter, reconcilePass } = visitorPassService;
 
-// POST /api/rfid/temporary
-// Body: { cardId, visitorName, validDate? }   validDate = 'YYYY-MM-DD' (Manila), default today
 exports.issueTemporaryCard = async (req, res, next) => {
   try {
     const rawCardId = req.body.cardId ?? req.body.uid;
@@ -886,9 +816,8 @@ exports.issueTemporaryCard = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'That is not a valid RFID UID' });
     }
 
-    // Date rule (Asia/Manila, decided on the server — the browser date is
-    // never trusted): today or a near-future day only. A past day makes no
-    // sense for a pass that grants access.
+    // Date rule (Asia/Manila, decided on the server — the browser date is never trusted)
+    // Date rule (Asia/Manila, decided on the server — the browser date is never trusted): today or a near-future day only
     const now = new Date();
     let day = startOfLocalDay(now);
     if (req.body.validDate) {
@@ -913,17 +842,15 @@ exports.issueTemporaryCard = async (req, res, next) => {
     const existing = await cardLookup.findByUid(cardId);
     let card;
     if (existing) {
-      // A member/employee card can never be converted into a visitor pass.
+      // A member/employee card can never be converted into a visitor pass
       if (existing.cardType !== 'TEMPORARY') {
         return res.status(409).json({ success: false, message: 'This card is registered to a member/employee and cannot be used as a visitor pass' });
       }
-      // Visitor hardware is reused. A card is released for the next visitor
-      // when the previous visit is CHECKED OUT (or revoked / past its day) —
-      // never while it is still PENDING / UPCOMING / ACTIVE.
+      // Visitor hardware is reused
       if (existing.memberAssignmentId) {
         return res.status(409).json({ success: false, message: 'This card is currently lent to a member as a temporary card. Return it first.' });
       }
-      await reconcilePass(existing); // heal a checkout whose card write was lost
+      await reconcilePass(existing);
       if (!visitorPassService.isCardAvailable(existing, now)) {
         const st = passStatus(existing, now);
         return res.status(409).json({
@@ -933,8 +860,7 @@ exports.issueTemporaryCard = async (req, res, next) => {
             : `This card is currently assigned to ${existing.visitorName} (valid ${formatLocalDateLabel(existing.validFrom)}). Revoke it first or wait until the visit is checked out.`,
         });
       }
-      // Atomic claim: the filter re-checks availability inside the write, so
-      // two admins assigning the same card at the same moment cannot both win.
+      // Atomic claim
       card = await RFIDCard.findOneAndUpdate(
         { _id: existing._id, ...availableFilter(now) },
         {
@@ -978,12 +904,10 @@ exports.issueTemporaryCard = async (req, res, next) => {
   }
 };
 
-// GET /api/rfid/temporary?status=PENDING|ACTIVE|CHECKED_OUT|EXPIRED|REVOKED|UPCOMING&available=true&limit=50
 exports.listTemporaryCards = async (req, res, next) => {
   try {
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
-    // Visitor passes only. Member loans and blank spare cards are listed by
-    // the temporary-card inventory (GET /rfid/temporary/inventory).
+    // Visitor passes only
     const cards = await RFIDCard.find({ cardType: 'TEMPORARY', memberAssignmentId: null, visitorName: { $ne: null } })
       .sort({ validFrom: -1, createdAt: -1 }).limit(limit);
     for (const c of cards) await reconcilePass(c);
@@ -1001,7 +925,6 @@ exports.listTemporaryCards = async (req, res, next) => {
   }
 };
 
-// PATCH /api/rfid/temporary/:id/revoke
 exports.revokeTemporaryCard = async (req, res, next) => {
   try {
     const card = await RFIDCard.findById(req.params.id);

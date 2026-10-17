@@ -1,6 +1,4 @@
-// READ-ONLY audit for Phase 4. Changes nothing.
-// Run:  mongosh "<your connection string>" --quiet phase4_index_audit.mongosh.js
-// (Do NOT paste the connection string, or this output if it contains secrets, into chat.)
+// READ-ONLY audit for Phase 4
 print('--- server ---');
 printjson({ version: db.version(), replicaSet: (db.hello().setName || null), isWritablePrimary: db.hello().isWritablePrimary });
 

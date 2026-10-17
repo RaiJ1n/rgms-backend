@@ -39,15 +39,14 @@ router.put(
   [body('isActive').isBoolean().withMessage('isActive must be true or false')],
   coachController.setCoachStatus
 );
-// Section 9: Admin-controlled public visibility, separate from account
-// activation above — see coachController.setCoachVisibility.
+// Admin-controlled public visibility, separate from account activation above
 router.put(
   '/coaches/:id/visibility',
   [body('isDisplayed').isBoolean().withMessage('isDisplayed must be true or false')],
   coachController.setCoachVisibility
 );
 
-// Section 10: Coach Registration Questions management.
+// Coach Registration Questions management
 router.get('/coach-questions', coachQuestionController.getQuestions);
 router.post(
   '/coach-questions',
@@ -94,8 +93,7 @@ router.put(
     body('phone').optional().isMobilePhone().withMessage('Enter a valid mobile number'),
     body('address').optional().isString().trim(),
     body('email').optional().isEmail().withMessage('Enter a valid email').normalizeEmail(),
-    // Same length caps as userRoutes.js's member-facing validators —
-    // this is the admin-side path to the same fields.
+    // Same length caps as userRoutes.js's member-facing validators
     body('medicalConditions').optional({ checkFalsy: true }).isString().trim().isLength({ max: 1000 }),
     body('medicalAllergies').optional({ checkFalsy: true }).isString().trim().isLength({ max: 500 }),
     body('emergencyContactName').optional({ checkFalsy: true }).isString().trim().isLength({ max: 200 }),
@@ -114,10 +112,7 @@ router.put(
   [body('studentPromoActive').isBoolean().withMessage('studentPromoActive must be true or false')],
   adminController.setStudentPromoActive
 );
-// Undo a previous Student ID approval for this member, returning it to
-// pending review (see unverifyStudentId's comment in adminController.js
-// for why this is member-scoped rather than submission-id-scoped like
-// approve/reject below).
+// Undo a previous Student ID approval for this member, returning it to pending review
 router.put('/members/:id/student-id/unverify', adminController.unverifyStudentId);
 router.delete('/members/:id', adminController.deleteMember);
 
@@ -126,22 +121,18 @@ router.put('/notifications/:id/read', adminController.markNotificationRead);
 router.put('/notifications/mark-all-read', adminController.markAllNotificationsRead);
 
 router.get('/payments', adminController.getPayments);
-// Same filters as the list; totals are computed on the backend only.
+// Same filters as the list; totals are computed on the backend only
 router.get('/payments/summary', adminController.getPaymentSummary);
-// Date range is optional (validated in the handler as real Manila dates).
+// Date range is optional (validated in the handler as real Manila dates)
 router.get('/payments/export', adminController.exportPaymentsXLSX);
 router.post(
   '/payments/manual',
   [
-    // userId is only required for member payments — the handler enforces it;
-    // a walk-in (non-member) payment sends customerType + customerName instead.
     body('userId').optional({ values: 'falsy' }).isMongoId().withMessage('Invalid member selected'),
     body('customerType').optional().isIn(['MEMBER', 'WALK_IN']).withMessage('Invalid customer type'),
     body('customerName').optional().isString().trim(),
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
     body('planId').isMongoId().withMessage('A membership plan must be selected'),
-    // Manual (front-desk) payments are Walk-in only; GCash comes from the
-    // member's own payment submission and is approved, not typed in here.
     body('paymentMethod').optional().isString().trim().isIn(['Walk-in']).withMessage('Manual payments can only be recorded as Walk-in'),
     body('referenceNumber').optional().isString().trim(),
   ],

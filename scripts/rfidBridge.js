@@ -1,65 +1,15 @@
 // scripts/rfidBridge.js
-//
-// Local serial <-> API bridge for split deployments
-// (Arduino on a PC, backend on the VPS behind Nginx).
-//
-//   Arduino --USB serial--> [this bridge] --HTTPS--> Nginx --> Express --> MongoDB
-//   Arduino <--USB serial-- [this bridge] <---------- JSON { lcd:{line1,line2} }
-//
-// What it does
-//   1. Reads UID lines from the Arduino. Only lines that normalize to a real
-//      hex UID (8-14 chars) are sent to the server — boot banners, debug
-//      text and echoes are logged and ignored (they used to be POSTed as
-//      "UIDs").
-//   2. POST <API_BASE>/rfid/scan  (x-device-key). The backend decides BIND vs
-//      ATTENDANCE and returns lcd:{line1,line2}; we write "line1|line2" back.
-//   3. Polls GET <API_BASE>/rfid/device-status. That poll is ALSO the
-//      heartbeat that lets the admin UI show "scanner connected" (the VPS has
-//      no serial port of its own), and it carries MODE / RFID BOUND updates.
-//   4. Reports the REAL failure on the LCD instead of one generic message:
-//        network down / timeout / DNS / TLS -> SERVER ERROR | NO RESPONSE
-//        HTTP 5xx                            -> SERVER ERROR | HTTP <code>
-//        HTTP 401 (bad device key)           -> DEVICE KEY   | REJECTED  (403 = card/subscription denial, shown with its own LCD text)
-//        Not a valid UID                     -> READ ERROR   | TRY AGAIN
-//      and always prints the exact cause in this console.
-//
-// Run:   node scripts/rfidBridge.js
-// Test:  node scripts/rfidDiagnose.js   (run this FIRST if anything fails)
-//
-// Config (env vars, or a scripts/bridge.env / backend .env file):
-//   API_BASE          default https://api.remerfitnessgym.tech/api
-//   RFID_DEVICE_KEY   required — must equal RFID_DEVICE_KEY in the VPS .env
-//   SERIAL_PORT       optional — e.g. COM5 or /dev/ttyUSB0 (auto-detects otherwise)
-//   BAUD              default 9600 (must match Serial.begin in the sketch)
-//   REQUEST_TIMEOUT_MS default 8000
-//   BRIDGE_DEBUG=1    print every raw serial line WITH the gap (ms) since the
-//                     previous signal for the same card - use it to measure your
-//                     reader (see RFID_MULTI_TAP.md)
-//   RFID_DEBOUNCE_MS  default 1500 - sliding "same physical tap" window. Keep it
-//                     SHORT (at or below the sketch's cooldown): the Arduino
-//                     sketch already blocks repeats of one card for 5 s and the
-//                     server enforces its own 5 s window, so this only collapses
-//                     rapid repeats. Do NOT raise it to 5000 - at the exact 5 s
-//                     boundary it could swallow a legitimate tap and leave the
-//                     LCD on "Reading card...". 0 disables.
-//   BRIDGE_QUEUE_MAX  default 10   - taps waiting for the server before new ones
-//                     are refused with BUSY (taps are queued, never dropped)
-//   BRIDGE_SCAN_ATTEMPTS default 2 - tries per tap on network/5xx failure; every
-//                     try carries the SAME scanId, so a retry cannot double-record
-//
-// Requires Node 18+ (global fetch). Keep it alive with a supervisor
-// (PM2 / NSSM / Task Scheduler) — see the deployment notes.
+// Run: node scripts/rfidBridge.js Test: node scripts/rfidDiagnose.js (run this FIRST if anything fails) Config
 
 const path = require('path');
 const os = require('os');
 
-// Optional env files — never overrides real environment variables.
+// Optional env files
 try {
   const dotenv = require('dotenv');
   dotenv.config({ path: path.join(__dirname, 'bridge.env') });
   dotenv.config({ path: path.join(__dirname, '..', '.env') });
 } catch {
-  /* dotenv is optional */
 }
 
 if (typeof fetch !== 'function') {
@@ -70,8 +20,7 @@ if (typeof fetch !== 'function') {
 
 const { SerialPort } = require('serialport');
 const { ReadlineParser } = require('@serialport/parser-readline');
-// ONE normalizer shared with the backend, so "UID: 41 9A 4E 16", "0x419a4e16"
-// and "419A4E16" are all treated identically on both sides.
+// ONE normalizer shared with the backend, so "UID: 41 9A 4E 16"
 const { normalizeUid, isValidUid } = require('../utils/normalizeUid');
 const { TapDebouncer } = require('../utils/tapDebouncer');
 
@@ -92,7 +41,7 @@ const envInt = (name, fallback, min, max) => {
 const DEBOUNCE_MS = envInt('RFID_DEBOUNCE_MS', 1500, 0, 30000);
 const QUEUE_MAX = envInt('BRIDGE_QUEUE_MAX', 10, 1, 100);
 const SCAN_ATTEMPTS = envInt('BRIDGE_SCAN_ATTEMPTS', 2, 1, 5);
-const TAP_MAX_AGE_MS = 20000; // a queued tap older than this is stale (member has walked away)
+const TAP_MAX_AGE_MS = 20000;
 const POLL_IDLE_MS = 3000;
 const POLL_BIND_MS = 1000;
 
@@ -104,17 +53,15 @@ if (!DEVICE_KEY) {
 let port = null;
 let currentPortPath = null;
 let lastMode = null;
-const debouncer = new TapDebouncer(DEBOUNCE_MS); // sliding same-tap window
+const debouncer = new TapDebouncer(DEBOUNCE_MS);
 const tapQueue = [];
 let pumping = false;
-let lastBoundAt = null; // last bind timestamp already handled
+let lastBoundAt = null;
 let boundBaselineSet = false;
 let suppressBoundUntil = 0;
 let pollTimer = null;
 
-// HTTP header values must be plain ASCII. A PC hostname such as "Raijin’s-PC"
-// (curly apostrophe) makes fetch() throw a TypeError BEFORE anything is sent,
-// which used to surface on the LCD as SERVER ERROR / NO RESPONSE for every tap.
+// HTTP header values must be plain ASCII
 const headerSafe = (v) => String(v || '').replace(/[^\x20-\x7E]/g, '?').slice(0, 100);
 
 const baseHeaders = () => ({
@@ -129,9 +76,7 @@ const ts = () => new Date().toISOString().slice(11, 19);
 const log = (...a) => console.log(`[BRIDGE ${ts()}]`, ...a);
 const warn = (...a) => console.warn(`[BRIDGE ${ts()}]`, ...a);
 
-// ---------------------------------------------------------------------------
 // HTTP with a hard timeout + precise error classification
-// ---------------------------------------------------------------------------
 async function api(method, endpoint, body) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
@@ -147,12 +92,10 @@ async function api(method, endpoint, body) {
     try {
       json = text ? JSON.parse(text) : null;
     } catch {
-      /* non-JSON (e.g. Nginx HTML error page) */
     }
     return { ok: res.ok, status: res.status, json, text };
   } catch (err) {
     const cause = err && err.cause ? err.cause : err;
-    // AbortError is a DOMException whose numeric `.code` is 20 — check the name first.
     const code = err.name === 'AbortError' ? 'TIMEOUT' : (typeof cause.code === 'string' && cause.code) || err.name || 'FETCH_FAILED';
     const e = new Error(`${code}${cause.message ? ` — ${cause.message}` : ''}`);
     e.code = code;
@@ -187,9 +130,7 @@ function networkHint(code) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Serial
-// ---------------------------------------------------------------------------
 const KNOWN_IDS = new Set([
   '2341:0043', '2341:0001', '2341:0010', '2341:0042', '2341:0037', '2341:0036',
   '2A03:0043', '1A86:7523', '1A86:5523', '10C4:EA60', '0403:6001', '0403:6015',
@@ -261,17 +202,13 @@ async function openSerial() {
         scheduleReconnect('port closed / Arduino unplugged');
       });
       log('Serial open. Tap a card.');
-      lastMode = null; // force MODE re-sync after (re)connect
+      lastMode = null;
       resolve();
     });
   });
 }
 
-// ---------------------------------------------------------------------------
-// Tap handling
-// ---------------------------------------------------------------------------
-// One id per PHYSICAL tap. Every retry of that tap reuses it, which is what lets
-// the server recognise "same tap, again" and return the original result.
+// Tap handling One id per PHYSICAL tap
 let tapSeq = 0;
 function makeScanId() {
   const host = headerSafe(BRIDGE_ID).replace(/[^A-Za-z0-9]/g, '').slice(0, 12) || 'bridge';
@@ -282,9 +219,7 @@ function makeScanId() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Reads a serial line and decides: not a UID / repeated signal of the tap that
-// is already being handled / a NEW tap (queued). It never talks to the server
-// itself, so a slow request can never make it miss the next tap.
+// Reads a serial line and decides
 function handleSerialLine(rawLine) {
   const raw = String(rawLine || '').replace(/\r/g, '').trim();
   if (!raw) return;
@@ -294,19 +229,16 @@ function handleSerialLine(rawLine) {
 
   if (!isValidUid(uid)) {
     if (DEBUG) log(`serial RX: ${JSON.stringify(raw)}`);
-    // Boot banner / debug output / echo of our own MODE: command, etc.
     log(`Arduino says (not a UID, ignored): ${JSON.stringify(raw.slice(0, 60))}`);
     return;
   }
 
-  // Sliding window: EVERY signal (kept or ignored) moves the window forward, so
-  // a card resting on the reader and re-sending is one tap, while a card that
-  // was lifted (quiet for >= DEBOUNCE_MS) and tapped again is a new tap.
+  // Sliding window
   const { isNewTap, gap } = debouncer.observe(uid, t);
   if (DEBUG) log(`serial RX: ${JSON.stringify(raw)}${gap === null ? '' : ` (+${gap}ms since last signal for this card)`}`);
   if (!isNewTap) {
     log(`Repeated signal for ${uid} ignored (+${gap}ms < ${DEBOUNCE_MS}ms): same physical tap`);
-    return; // silent on the LCD on purpose - the previous result is still on screen
+    return;
   }
 
   if (tapQueue.length >= QUEUE_MAX) {
@@ -320,8 +252,7 @@ function handleSerialLine(rawLine) {
   pump();
 }
 
-// Sends queued taps one at a time, IN ORDER. Taps that arrive during a request
-// wait here (they used to be dropped with "PLEASE WAIT").
+// Sends queued taps one at a time, IN ORDER
 async function pump() {
   if (pumping) return;
   pumping = true;
@@ -345,11 +276,10 @@ async function sendTap(tap) {
   for (let attempt = 1; attempt <= SCAN_ATTEMPTS; attempt += 1) {
     try {
       log(`UID read from Arduino: ${raw} -> ${uid}  => POST ${API_BASE}/rfid/scan (attempt ${attempt}/${SCAN_ATTEMPTS})`);
-      // Same scanId on every attempt: if attempt 1 actually reached the server
-      // and only the response was lost, the retry returns that result.
+      // Same scanId on every attempt
       r = await api('POST', '/rfid/scan', { cardId: uid, scanId });
       lastErr = null;
-      if (r.status < 500 && !(!r.json && !r.ok)) break; // a real answer
+      if (r.status < 500 && !(!r.json && !r.ok)) break;
       lastErr = new Error(`HTTP ${r.status}`);
     } catch (err) {
       lastErr = err;
@@ -371,9 +301,8 @@ async function sendTap(tap) {
     const body = r.json || {};
     log(`HTTP ${r.status} action=${body.action || '-'}${body.replayed ? ' (replayed)' : ''}${body.duplicate ? ' (duplicate)' : ''} bindingMode=${body.bindingMode === true} bound=${body.bound === true} msg=${JSON.stringify(body.message || '')}`);
 
-    // Only 401 means the device key failed (requireDeviceKey). 403 is a normal
-    // business denial from the scan flow (deactivated card, expired/no
-    // subscription, completed day...) and carries its own LCD text below.
+    // Only 401 means the device key failed (requireDeviceKey)
+    // 403 is a normal business denial from the scan flow
     if (r.status === 401) {
       warn(`Server REJECTED the device key (${body.errorCode || 'no errorCode'}). RFID_DEVICE_KEY here != RFID_DEVICE_KEY in the VPS .env.`);
       await writeLine('DEVICE KEY|REJECTED');
@@ -390,11 +319,8 @@ async function sendTap(tap) {
       return;
     }
 
-    // The server says this was a repeat of a tap it already handled. The sketch
-    // only sends a read after its own 5 s cooldown and shows "Reading card..."
-    // the moment it does, so a reply that arrives here is ALWAYS for a screen
-    // that is waiting. Say so (DUPLICATE / SCAN IGNORED) instead of staying
-    // silent, otherwise the sketch waits 15 s and reports "BRIDGE OFFLINE".
+    // The server says this was a repeat of a tap it already handled
+    // Say so (DUPLICATE / SCAN IGNORED) instead of staying silent
     if (body.silent) {
       log(`Server ignored a repeated signal for ${uid} (duplicate; telling the LCD)`);
     }
@@ -403,8 +329,6 @@ async function sendTap(tap) {
     if (lcd && lcd.line1) {
       await writeLine(`${lcd.line1}|${lcd.line2 || ''}`);
       if (lcd.line1 === 'RFID BOUND') suppressBoundUntil = Date.now() + 6000;
-      // If another tap is already waiting, skip the delayed second screen so it
-      // cannot be painted over that tap's own result.
       if (lcd.stage2 && lcd.stage2.lcdLine1) {
         setTimeout(() => {
           if (!tapQueue.length) writeLine(`${lcd.stage2.lcdLine1}|${lcd.stage2.lcdLine2 || ''}`);
@@ -421,9 +345,7 @@ async function sendTap(tap) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Heartbeat + mode sync + bind confirmation
-// ---------------------------------------------------------------------------
 async function pollStatus() {
   let nextDelay = POLL_IDLE_MS;
   try {
@@ -443,8 +365,6 @@ async function pollStatus() {
         log(`Mode -> ${mode}`);
         await writeLine(`MODE:${mode}`);
       }
-      // RFID BOUND confirmation for binds completed via the admin UI
-      // (register page: owner picked after the tap).
       const lb = d && d.lastBound;
       if (!boundBaselineSet) {
         lastBoundAt = lb ? lb.at : null;
@@ -464,9 +384,7 @@ async function pollStatus() {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Start-up: self-test the API, then open serial
-// ---------------------------------------------------------------------------
 async function selfTest() {
   try {
     const r = await api('GET', '/rfid/ping');

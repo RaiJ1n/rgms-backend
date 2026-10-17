@@ -1,8 +1,5 @@
 // test/dailyDeduction.test.js - once-per-Manila-day session deduction
-// (Subscription.lastDeductedDayKey). UNIT tests: the real subscriptionService
-// and memberAttendanceService run over the in-memory model store. They prove
-// the application logic and the shape of the conditional update, NOT real
-// MongoDB behaviour - see test/dailyDeduction.mongo.test.js for that.
+// test/dailyDeduction.test.js - once-per-Manila-day session deduction (Subscription.lastDeductedDayKey)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -33,7 +30,7 @@ function member(subOverrides) {
   return { user, sub };
 }
 const reqId = () => `req-${++n}-abcdefgh`;
-const checkInOut = async (user) => { // one full session
+const checkInOut = async (user) => {
   const r = await memberAttendance.checkIn({ user, now: new Date() });
   await memberAttendance.checkOut({ user, now: new Date() });
   return r;
@@ -87,7 +84,7 @@ test('a new Manila day deducts again; midnight boundary uses Manila time, not UT
   // 23:59:59.999 Manila vs 00:00:00 Manila next day (UTC+8)
   assert.equal(formatLocalDateLabel(new Date('2026-10-14T15:59:59.999Z')), '2026-10-14');
   assert.equal(formatLocalDateLabel(new Date('2026-10-14T16:00:00.000Z')), '2026-10-15');
-  assert.equal(formatLocalDateLabel(new Date('2026-10-14T00:30:00.000Z')), '2026-10-14'); // 08:30 Manila, still the 14th
+  assert.equal(formatLocalDateLabel(new Date('2026-10-14T00:30:00.000Z')), '2026-10-14');
 });
 
 test('a FAILED deduction leaves no marker; the next check-in that day retries it once', async () => {
@@ -102,7 +99,7 @@ test('a FAILED deduction leaves no marker; the next check-in that day retries it
   assert.equal(sub.sessionsUsed, 0);
   assert.equal(sub.lastDeductedDayKey, undefined);
 
-  const second = await checkInOut(user); // sessionsToday = 2
+  const second = await checkInOut(user);
   assert.equal(second.deducted, true, 'retry succeeds even though it is not the first session');
   assert.equal(sub.sessionsUsed, 1);
   const third = await checkInOut(user);
@@ -136,9 +133,9 @@ test('no subscription: attendance still recorded, nothing thrown', async () => {
 });
 
 test('deploy-day guard: a legacy subscription already charged today by the old code is not charged twice', async () => {
-  const { user, sub } = member({ sessionsUsed: 3 }); // old code charged earlier today; marker never written
+  const { user, sub } = member({ sessionsUsed: 3 });
   await Attendance.create({ userId: user._id, subjectType: 'member', attendanceType: 'MEMBER', dayKey: TODAY(), checkIn: new Date(), checkOut: new Date() });
-  const r = await memberAttendance.checkIn({ user, now: new Date() }); // 2nd session today
+  const r = await memberAttendance.checkIn({ user, now: new Date() });
   assert.equal(r.deducted, false);
   assert.equal(sub.sessionsUsed, 3);
   assert.equal((await subscriptionService.recordAttendanceSession(user._id, { dayKey: '2099-01-01' })).deducted, true, 'next day charges normally');

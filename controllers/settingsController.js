@@ -2,9 +2,8 @@ const { validationResult } = require('express-validator');
 const SocialSettings = require('../models/SocialSettings');
 const cloudinary = require('../config/cloudinary');
 
-// Public — no auth. Called from HomeView.vue's footer. Always returns a
-// 200 with (possibly empty) strings rather than 404ing, so the frontend
-// never has to special-case "settings don't exist yet."
+// Public — no auth
+// Always returns a 200 with (possibly empty) strings rather than 404ing
 const getSocialLinks = async (req, res, next) => {
   try {
     const settings = await SocialSettings.getOrCreate();
@@ -20,10 +19,7 @@ const getSocialLinks = async (req, res, next) => {
   }
 };
 
-// Admin-only (protect, admin applied in adminRoutes.js, same as every
-// other admin endpoint). Each field is optional and independent — sending
-// only `facebook` leaves `instagram` untouched, so the admin can update
-// one link at a time from the Settings page without clearing the other.
+// Admin-only (protect, admin applied in adminRoutes.js, same as every other admin endpoint)
 const updateSocialLinks = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -49,10 +45,6 @@ const updateSocialLinks = async (req, res, next) => {
       },
     });
   } catch (error) {
-    // Mongoose schema `match` validation failures (bad URL format) land
-    // here as a ValidationError — surface them the same way express-
-    // validator errors are surfaced, instead of falling through as a
-    // generic 500 via errorMiddleware.
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors).map((e) => e.message);
       return res.status(422).json({ success: false, message: messages[0], errors: messages });
@@ -61,10 +53,8 @@ const updateSocialLinks = async (req, res, next) => {
   }
 };
 
-// Public — no auth. Called from GcashConfirmation.vue so members always
-// see the admin's current GCash QR. Same "always 200, empty string until
-// configured" contract as getSocialLinks, so the frontend never has to
-// special-case "no QR uploaded yet."
+// Public — no auth
+// Same "always 200, empty string until configured" contract as getSocialLinks
 const getPaymentQr = async (req, res, next) => {
   try {
     const settings = await SocialSettings.getOrCreate();
@@ -79,13 +69,7 @@ const getPaymentQr = async (req, res, next) => {
   }
 };
 
-// Admin-only (protect, admin applied in settingsRoutes.js, same pairing
-// used for PUT /social). Expects a single 'qrImage' file already uploaded
-// to Cloudinary by uploadMiddleware — req.file.path is the hosted URL,
-// req.file.filename is the Cloudinary public_id, same fields
-// studentIdController.js reads off req.file. If a QR was previously
-// uploaded, the old Cloudinary asset is removed so replacing the QR
-// doesn't leave orphaned images behind.
+// Admin-only (protect, admin applied in settingsRoutes.js, same pairing used for PUT /social)
 const updatePaymentQr = async (req, res, next) => {
   try {
     if (!req.file) {

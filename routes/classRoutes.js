@@ -8,37 +8,18 @@ const upload = require('../middleware/uploadMiddleware');
 
 const STATUS_VALUES = ['Active', 'Cancelled', 'Completed'];
 
-// Browsing the class schedule is public. Only open (Active, upcoming)
-// classes come back here — see classController.getClasses.
+// Browsing the class schedule is public
 router.get('/', classCtrl.getClasses);
 
-// Admin management list — every class regardless of status/date.
-// Registered before '/:id' so 'admin' is never mistaken for an id.
+// Admin management list
 router.get('/admin/all', protect, admin, classCtrl.getAllClassesAdmin);
 
-// Registered members for the admin "View" modal. Declared before the
-// generic '/:id' below for the same reason '/admin/all' is — Express
-// matches by full path shape here ('/:id/members' has an extra segment,
-// so it can't collide with '/:id' either way), but keeping the more
-// specific routes grouped together above the generic one stays
-// consistent with the existing convention in this file.
+// Registered members for the admin "View" modal
 router.get('/:id/members', protect, admin, classCtrl.getClassMembers);
 
 router.get('/:id', classCtrl.getClass);
 
-// Creating/editing/removing classes is admin-only. 'image' is optional —
-// multer/Cloudinary only sets req.file when a file is actually sent, so
-// editing a class without touching its photo works the same as before.
-// Validators run after upload.single() on purpose — multer is what
-// parses the multipart body into req.body, so express-validator has
-// nothing to check against if it runs first.
-//
-// instructorId: optional and checkFalsy so submitting the "— Unassigned —"
-// option (empty string) passes validation — pickPayload in the controller
-// is what actually converts '' into "no instructor" rather than rejecting
-// it here. A non-empty value must be a real Mongo ObjectId; whether it's
-// actually an existing, active Coach is checked in the controller layer
-// against the Coach collection, not here.
+// Creating/editing/removing classes is admin-only
 router.post(
   '/',
   protect,
@@ -71,7 +52,7 @@ router.put(
 );
 router.delete('/:id', protect, admin, classCtrl.deleteClass);
 
-// Any logged-in member can register/cancel for themselves.
+// Any logged-in member can register/cancel for themselves
 router.post('/:id/register', protect, classCtrl.registerMember);
 router.post('/:id/cancel', protect, classCtrl.cancelRegistration);
 

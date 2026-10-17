@@ -1,16 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-// Guards POST /api/admin/auth/register.
-//
-// - No admin account exists yet -> request passes through untouched
-//   (one-time bootstrap so the very first admin can be created).
-// - At least one admin already exists -> the requester must present a
-//   valid JWT for an existing admin. Anonymous registration is refused.
-//
-// This replaces the old shared ADMIN_REGISTRATION_KEY, which was a single
-// static secret with no way to revoke access to one person without
-// rotating it for everyone.
+// Guards POST /api/admin/auth/register
 const requireAdminIfExists = async (req, res, next) => {
   try {
     const adminCount = await User.countDocuments({ role: 'admin' });

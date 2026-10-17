@@ -1,12 +1,5 @@
-// One-time seed for the membership plans shown on Membership.vue.
-//
-// Run once with:  node scripts/seedPlans.js
-//
-// Expiration is calculated from durationValue + durationUnit (see
-// services/subscriptionService.js) — NOT from the `duration` string,
-// which is display-only now. Add new plans with any durationValue/
-// durationUnit combo and they'll expire correctly with no other code
-// changes required.
+// One-time seed for the membership plans shown on Membership.vue
+// Run once with: node scripts/seedPlans.js Expiration is calculated from durationValue + durationUnit
 require('dotenv').config();
 const mongoose = require('mongoose');
 const connectDB = require('../config/db');

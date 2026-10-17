@@ -1,29 +1,12 @@
-// One-off script to create a coach account.
-// Run from your backend project root:
-//   node scripts/seedCoach.js
-//
-// Uses User.create() (not a raw insert) so the pre('save') hook
-// actually hashes the password — a raw db.users.insertOne() would
-// store it in plain text and login would never match.
+// One-off script to create a coach account
 
 require('dotenv').config();
 const mongoose = require('mongoose');
 const User = require('../models/User');
 
-// Adjust these before running:
-// const COACH = {
-//   fullname: 'John Russel Orias',
-//   email: 'johnrusselorias@gmail.com',
-//   password: 'changeme123', // gets bcrypt-hashed automatically
-//   role: 'coach',
-//   isActive: true,
-// };
+// Adjust these before running
 
 async function run() {
-  // If your config/db.js exports a connectDB() helper, prefer that
-  // instead of this raw connect — swap the next line for
-  // require('../config/db')() if so, to stay consistent with the
-  // rest of the app's connection setup/logging/options.
   await mongoose.connect(process.env.MONGO_URI);
   console.log('Connected to MongoDB');
 

@@ -10,14 +10,8 @@ const router = express.Router();
 
 const CLIENT_URL = clientOrigins[0] || 'http://localhost:5173';
 
-// Google/Facebook strategies are only registered in config/passport.js
-// when their env vars are present. Without this guard, clicking the
-// button when a provider isn't configured hits
-// passport.authenticate('<provider>') for a strategy that was never
-// registered, which throws synchronously ("Unknown authentication
-// strategy") and surfaces as a raw 500 instead of taking the user back
-// to the login page with an explanation — the same friendly-redirect
-// treatment callbackHandler already gives every other OAuth failure.
+// Google/Facebook strategies are only registered in config/passport.js when their env vars are present
+// Without this guard, clicking the button
 function requireProviderConfigured(provider, isConfigured) {
   return (req, res, next) => {
     if (!isConfigured) {
@@ -31,13 +25,7 @@ function requireProviderConfigured(provider, isConfigured) {
 const isGoogleConfigured = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
 const isFacebookConfigured = Boolean(process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET);
 
-// ---- Google / Facebook OAuth ----
-// Same underlying flow serves both the Login and Sign Up pages — the
-// buttons on each just point at these two GET routes, and
-// oauthService.handleOAuthProfile is what decides new-account vs.
-// sign-in vs. conflict, not the page the user clicked from. See
-// oauthController.js for the callback/exchange/link handlers and
-// oauthService.js for that decision logic.
+// Google / Facebook OAuth Same underlying flow serves both the Login and Sign Up pages
 router.get(
   '/google',
   requireProviderConfigured('google', isGoogleConfigured),
@@ -52,13 +40,10 @@ router.get(
 );
 router.get('/facebook/callback', oauthController.facebookCallback);
 
-// Trades the one-time code from the /oauth/callback redirect for the
-// actual { user, token } — called by the frontend's OAuthCallback.vue.
+// Trades the one-time code from the /oauth/callback redirect for the actual { user, token }
 router.post('/oauth/exchange', [body('code').notEmpty().withMessage('Missing code')], oauthController.exchangeCode);
 
-// Completes account-linking after the user has proven ownership of
-// their existing account via a normal (protected) login — see
-// oauthService.linkProviderToUser.
+// Completes account-linking after the user has proven ownership of their existing account via a normal
 router.post('/link', protect, [body('ticket').notEmpty().withMessage('Missing ticket')], oauthController.linkAccount);
 
 router.get('/me', protect, oauthController.me);
@@ -70,9 +55,7 @@ router.post(
     body('email').isEmail().withMessage('Valid email is required'),
     body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
     body('address').optional().isString().trim(),
-    // Section D1: server-side enforcement, not just a disabled frontend
-    // button — a request with this missing or false is rejected before
-    // it ever reaches authService.registerUser.
+    // server-side enforcement, not just a disabled frontend button
     body('privacyNoticeAcknowledged')
       .custom((v) => v === true)
       .withMessage('You must acknowledge the Privacy Notice to register'),
@@ -89,11 +72,8 @@ router.post(
   authController.login
 );
 
-// `protect` here isn't for access control (anyone can log themselves
-// out) — it's what populates req.user so authController.logout knows
-// which account's tokenVersion to bump. Without it, logout can't
-// actually invalidate anything server-side; it was previously a no-op
-// wrapped around a 200 response.
+// `protect` here isn't for access control (anyone can log themselves out)
+// `protect` here isn't for access control (anyone can log themselves out) — it's what populates req.user
 router.post('/logout', protect, authController.logout);
 router.post(
   '/forgot-password',

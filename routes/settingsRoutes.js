@@ -7,20 +7,15 @@ const upload = require('../middleware/uploadMiddleware');
 
 const router = express.Router();
 
-// Public — HomeView.vue's footer reads this without a token.
+// Public — HomeView.vue's footer reads this without a token
 router.get('/social', settingsController.getSocialLinks);
 
-// Admin-only — same protect+admin pair adminRoutes.js applies everywhere
-// else, just scoped to this one route instead of the whole router since
-// the GET above must stay public.
+// Admin-only
 router.put(
   '/social',
   protect,
   admin,
   [
-    // checkFalsy: true lets an admin submit an empty string to clear a
-    // link back to unset, without that empty string failing the isURL
-    // check — only a non-empty, malformed value should be rejected.
     body('facebook')
       .optional({ checkFalsy: true })
       .isString()
@@ -37,15 +32,10 @@ router.put(
   settingsController.updateSocialLinks
 );
 
-// Public — GcashConfirmation.vue reads this without a token, same
-// reasoning as GET /social above.
+// Public
 router.get('/payment-qr', settingsController.getPaymentQr);
 
-// Admin-only — same protect+admin pair as PUT /social. upload.single
-// pushes the file to Cloudinary via uploadMiddleware (already used for
-// Student ID and profile photo uploads) before updatePaymentQr runs, so
-// req.file.path / req.file.filename are populated by the time the
-// controller sees the request.
+// Admin-only
 router.put(
   '/payment-qr',
   protect,

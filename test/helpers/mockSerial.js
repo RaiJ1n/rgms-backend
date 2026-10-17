@@ -1,11 +1,4 @@
-// Preload (node -r) used by test/bridgeFlow.test.js. Replaces the `serialport`
-// packages with an in-memory reader so the REAL scripts/rfidBridge.js can be run
-// with scripted reader timing and no hardware.
-//
-//   FAKE_SERIAL_SCRIPT = JSON [[atMs, "LINE"], ...]   lines the "Arduino" prints,
-//                        atMs measured from the moment the port opens
-// Everything the bridge writes back to the LCD is echoed to stdout as
-//   SERIAL_WRITE <text>
+// Preload (node -r) used by test/bridgeFlow.test.js
 const Module = require('module');
 const { EventEmitter } = require('events');
 

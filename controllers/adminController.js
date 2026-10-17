@@ -41,11 +41,9 @@ const getUsers = async (req, res) => {
   }
 };
 
-// ---- Members (MemberAccount.vue / EditMember.vue) ----
+// Members (MemberAccount.vue / EditMember.vue)
 
-// One subscription lookup shared by getMembers/getMember so "Active" means
-// the same thing in both the list and the detail view: a subscription
-// that's marked active AND hasn't passed its end date yet.
+// One subscription lookup shared by getMembers/getMember
 const deriveStatus = (subscription) => {
   if (!subscription) return 'Inactive';
   const isCurrentlyActive = subscription.status === 'active' && subscription.endDate >= new Date();
@@ -67,8 +65,6 @@ const getMembers = async (req, res, next) => {
     const users = await User.find(filter).select('-password').sort({ createdAt: -1 }).skip(skip).limit(limit);
     const userIds = users.map((u) => u._id);
 
-    // Most recent subscription per user, newest endDate first, so the
-    // first match per user in this sorted list is the one we want.
     const subscriptions = await Subscription.find({ userId: { $in: userIds } })
       .populate('planId', 'name')
       .sort({ endDate: -1 });
@@ -79,9 +75,6 @@ const getMembers = async (req, res, next) => {
       if (!latestSubByUser.has(key)) latestSubByUser.set(key, sub);
     }
 
-    // Renewals are stored back-to-back, so the latest row's own startDate can
-    // be in the future. The list/export should show when the CURRENT run of
-    // membership began and when it finally ends.
     const rowsByUser = new Map();
     for (const sub of subscriptions) {
       const key = sub.userId.toString();
@@ -98,9 +91,7 @@ const getMembers = async (req, res, next) => {
         mobile: u.phone,
         address: u.address,
         plan: sub?.planId?.name || null,
-        // Section C3: spec's export requires Subscription Start/Expiration
-        // Date as separate columns from "Date Joined" (account creation) —
-        // already fetched above for deriveStatus, just wasn't surfaced here.
+        // spec's export requires Subscription Start/Expiration Date as separate columns from "Date Joined"
         subscriptionStart: (sub && subscriptionService.getCoverageWindow(rowsByUser.get(u._id.toString()))?.startDate) || sub?.startDate || null,
         subscriptionExpiration: sub?.endDate || null,
         status: deriveStatus(sub),
@@ -151,25 +142,14 @@ const getMember = async (req, res, next) => {
         studentVerification: studentVerification || null,
         facebookUrl: user.facebookUrl || '',
         instagramUrl: user.instagramUrl || '',
-        // Medical fields — deliberately only here (single-member detail,
-        // already admin-only via adminRoutes.js's protect+admin), never
-        // in getMembers' list response above. An admin/authorized staff
-        // member opening one member's record is the "authorized
-        // personnel, for program customization" case Section H allows;
-        // seeing it embedded in a scrollable list of everyone would not be.
+        // Medical fields
         medicalConditions: user.medicalConditions || '',
         medicalAllergies: user.medicalAllergies || '',
         emergencyContactName: user.emergencyContactName || '',
         emergencyContactPhone: user.emergencyContactPhone || '',
         medicalNotes: user.medicalNotes || '',
         medicalConsentGiven: user.medicalConsentGiven || false,
-        // Metadata only — same contract MedicalDocumentCard.vue already
-        // expects from the self-service profile endpoint. The signed,
-        // actually-openable URL for any one of these is minted on demand
-        // by GET /admin/members/:id/medical-document/:docId below, not
-        // embedded here, so this response stays cheap even if nobody
-        // clicks View. A member can have several on file (uploads are
-        // additive) — see the medicalDocuments comment in User.js.
+        // Metadata only
         medicalDocuments: (user.medicalDocuments || [])
           .filter((doc) => doc.public_id)
           .map((doc) => ({
@@ -186,15 +166,7 @@ const getMember = async (req, res, next) => {
   }
 };
 
-// Admin-only counterpart to userController.viewMedicalDocument — same
-// "mint a fresh signed URL, never persist/hand out a raw one" approach
-// (see buildMedicalDocumentResponse there), just scoped to the member
-// in the URL param instead of the requester's own account. This route
-// sits behind adminRoutes.js's blanket protect+admin, so reaching this
-// function at all already proves the requester is an authenticated
-// admin — the "authorized personnel, for program customization" case
-// the medicalDocuments field's comment in User.js anticipates. Scoped
-// to one document by :docId now that a member can have several on file.
+// Admin-only counterpart to userController.viewMedicalDocument — same "mint a fresh signed URL
 const getMemberMedicalDocument = async (req, res, next) => {
   try {
     const user = await User.findOne({ _id: req.params.id, role: 'user' }).select('medicalDocuments');
@@ -226,14 +198,6 @@ const updateMember = async (req, res, next) => {
     if (phone) user.phone = phone;
     if (address) user.address = address;
 
-    // Medical fields: an admin/authorized staff member can update these
-    // once the member has already given consent (via their own profile —
-    // see userController.updateProfile), but consent itself is never
-    // something an admin can grant on the member's behalf. If no consent
-    // is on file yet, medical fields in this request are silently
-    // ignored rather than erroring the whole save — an admin editing
-    // someone's phone number shouldn't be blocked by an unrelated
-    // missing consent checkbox.
     const medicalFieldsTouched = [medicalConditions, medicalAllergies, emergencyContactName, emergencyContactPhone, medicalNotes]
       .some((v) => v !== undefined);
     if (medicalFieldsTouched && user.medicalConsentGiven) {
@@ -260,9 +224,7 @@ const updateMember = async (req, res, next) => {
   }
 };
 
-// Separate from updateMember on purpose — this toggles login access
-// (isActive), a distinct concept from the subscription-derived status
-// shown in the member list. See User.js for the field's comment.
+// Separate from updateMember on purpose — this toggles login access (isActive)
 const setMemberStatus = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -290,9 +252,7 @@ const deleteMember = async (req, res, next) => {
     const user = await User.findOne({ _id: req.params.id, role: 'user' });
     if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
 
-    // Related records (payments, subscriptions, attendance, RFID card)
-    // are intentionally left in place for historical/audit purposes —
-    // only the account itself is removed.
+    // Related records
     await User.findByIdAndDelete(req.params.id);
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('member:deleted', { _id: req.params.id });
@@ -302,10 +262,7 @@ const deleteMember = async (req, res, next) => {
   }
 };
 
-// Admin-initiated signup — e.g. a walk-in registering at the front desk
-// without going through the public /signup flow. Skips email verification
-// since the admin is looking at a real person; still checks for a
-// duplicate email the same way updateMember does.
+// Admin-initiated signup
 const createMember = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -346,13 +303,7 @@ const createMember = async (req, res, next) => {
   }
 };
 
-// approveStudentId can turn studentPromoActive on, but there was
-// previously no way to turn it back off — e.g. a member's eligibility
-// lapses, or an ID was approved in error. This is the missing other half
-// of that toggle. Deliberately doesn't touch the original
-// StudentVerification submission's status — that record stays an
-// immutable log of what was reviewed and when; this only affects whether
-// the discount is currently in effect.
+// approveStudentId can turn studentPromoActive on, but there was previously no way to turn it back off
 const setStudentPromoActive = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -376,7 +327,7 @@ const setStudentPromoActive = async (req, res, next) => {
   }
 };
 
-// ---- Notifications (admin bell) ----
+// Notifications (admin bell)
 
 const getNotifications = async (req, res, next) => {
   try {
@@ -409,12 +360,7 @@ const markAllNotificationsRead = async (req, res, next) => {
   }
 };
 
-// Payment History list. Filtering, sorting and paging all happen in the
-// database (services/paymentQueryService.js), so they stay correct across
-// pages. Query: search, method, status, planId, customerType, startDate,
-// endDate (YYYY-MM-DD, Manila days, inclusive), sortBy
-// (date|amount|transactionNumber|customer|method|package|status), order
-// (asc|desc), page, limit.
+// Payment History list
 const getPayments = async (req, res, next) => {
   try {
     const { page, limit, skip, isExport } = parsePagination(req.query);
@@ -436,8 +382,7 @@ const getPayments = async (req, res, next) => {
   }
 };
 
-// Summary/report for the SAME filters as the list (backend is the only place
-// totals are computed). Revenue = approved payments only.
+// Summary/report for the SAME filters as the list (backend is the only place totals are computed)
 const getPaymentSummary = async (req, res, next) => {
   try {
     const built = await paymentQuery.buildFilter(req.query);
@@ -449,10 +394,7 @@ const getPaymentSummary = async (req, res, next) => {
   }
 };
 
-// Payment History Excel export. Uses the exact same filter + sort as the
-// list, so the file always matches what the admin is looking at. The date
-// range is optional now (exports everything that matches if omitted). A second
-// "Summary" sheet carries the same totals the on-screen report shows.
+// Payment History Excel export
 const EXPORT_MAX_ROWS = 5000;
 const exportPaymentsXLSX = async (req, res, next) => {
   try {
@@ -462,7 +404,6 @@ const exportPaymentsXLSX = async (req, res, next) => {
 
     const payments = await Payment.aggregate(paymentQuery.listPipeline(built.filter, sort, 0, EXPORT_MAX_ROWS));
 
-    // A 404 JSON message instead of a blank download, as before.
     if (payments.length === 0) {
       return res.status(404).json({ success: false, message: 'No payment records found for the selected range and filters.' });
     }
@@ -498,7 +439,7 @@ const exportPaymentsXLSX = async (req, res, next) => {
         customerType: p.customerType === 'WALK_IN' ? 'Walk-in (non-member)' : 'Member',
         plan: p.planId?.name || '—',
         paymentMethod: p.paymentMethod,
-        // Cash has no external reference — the transaction number is its receipt.
+        // Cash has no external reference — the transaction number is its receipt
         referenceNumber: p.referenceNumber || '',
         amount: p.amount,
         status: p.status,
@@ -614,14 +555,7 @@ const rejectPayment = async (req, res, next) => {
   }
 };
 
-// Records a payment taken at the front desk.
-//   MEMBER   (default): { userId, planId, amount, paymentMethod?, referenceNumber? }
-//            -> approved payment + membership created/extended (unchanged).
-//   WALK_IN  (non-member): { customerType: 'WALK_IN', customerName, planId, amount }
-//            -> approved CASH payment only. No account, no subscription, no
-//            reference number; the system receipt number is the receipt.
-//            Limited to 1-day plans: a multi-day membership needs an account
-//            to attach to, so those are refused with a clear message.
+// Records a payment taken at the front desk
 const createManualPayment = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -645,7 +579,7 @@ const createManualPayment = async (req, res, next) => {
           message: 'Walk-in (non-member) customers can only buy a 1-day pass. Create a member account for longer memberships.',
         });
       }
-      // Cashier double-click guard: the identical walk-in payment seconds ago.
+      // Cashier double-click guard
       const dup = await Payment.findOne({
         customerType: 'WALK_IN',
         customerName: new RegExp(`^${escapeRegex(customerName)}$`, 'i'),
@@ -660,7 +594,7 @@ const createManualPayment = async (req, res, next) => {
         customerType: 'WALK_IN',
         customerName,
         planId,
-        paymentMethod: 'Walk-in', // cash at the desk (the system's existing name for it)
+        paymentMethod: 'Walk-in',
         amount,
         status: 'approved',
       });
@@ -671,7 +605,6 @@ const createManualPayment = async (req, res, next) => {
       return res.status(201).json({ success: true, message: 'Walk-in payment recorded', data: payment, subscription: null, subscriptionError: null });
     }
 
-    // ---- member payment (existing behaviour) ----
     if (!userId || !mongoose.isValidObjectId(userId)) {
       return res.status(400).json({ success: false, message: 'A member must be selected' });
     }
@@ -703,8 +636,6 @@ const createManualPayment = async (req, res, next) => {
     socketUtil.emitToAdmins('stats:refresh');
     socketUtil.emitToAdmins('payment:updated', payment);
     socketUtil.emitToUser(payment.userId, 'payment:updated', payment);
-    // Membership status/plan on the member list & detail page is derived
-    // from the subscription this may have just created/extended.
     socketUtil.emitToAdmins('member:updated', { _id: payment.userId });
 
     res.status(201).json({
@@ -719,9 +650,7 @@ const createManualPayment = async (req, res, next) => {
   }
 };
 
-// Receipt numbers are random + date-prefixed, with a unique index as the
-// backstop. In the (very unlikely) event of a collision, retry with a new one
-// rather than failing the cashier's payment.
+// Receipt numbers are random + date-prefixed, with a unique index as the backstop
 async function createPaymentWithReceipt(fields, attempts = 4) {
   for (let i = 0; i < attempts; i += 1) {
     try {
@@ -731,7 +660,7 @@ async function createPaymentWithReceipt(fields, attempts = 4) {
       if (!isReceiptCollision || i === attempts - 1) throw err;
     }
   }
-  return null; // unreachable
+  return null;
 }
 
 const getSubscriptions = async (req, res, next) => {
@@ -742,15 +671,7 @@ const getSubscriptions = async (req, res, next) => {
     next(error);
   }
 };
-// Admin "Add Attendance". Three kinds of person, each with its own validation,
-// reusing the system's existing attendance rules instead of a parallel set:
-//   - member        { userId, action?, requestId? }  same session rules as RFID: many
-//                                              sessions per day, one open at a time
-//   - visitor pass  { visitorPassId, action? } goes through the SAME service code
-//                                              as an RFID tap (pass + attendance +
-//                                              card stay consistent)
-//   - walk-in guest { guestName }              free-text, no account/pass (unchanged)
-// action = 'checkin' (default) | 'checkout'. Time is always the server's now.
+// Admin "Add Attendance"
 const createManualAttendance = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -767,7 +688,6 @@ const createManualAttendance = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Choose only one: a member, a visitor pass, or a guest name' });
     }
 
-    // ---- Visitor pass ------------------------------------------------------
     if (visitorPassId) {
       try {
         const result = await attendanceService.manualVisitorAttendance({
@@ -790,7 +710,7 @@ const createManualAttendance = async (req, res, next) => {
     }
 
 
-    // ---- Member ------------------------------------------------------------
+    // Member
     if (userId) {
       const user = await User.findOne({ _id: userId, role: 'user' });
       if (!user) return res.status(404).json({ success: false, message: 'Member not found' });
@@ -798,9 +718,7 @@ const createManualAttendance = async (req, res, next) => {
         return res.status(403).json({ success: false, message: 'This member account has been deactivated' });
       }
 
-      // Shared with the RFID tap: many sessions per day, one open at a time,
-      // server clock, idempotent when a requestId is supplied. Success is
-      // returned only after the database write has been confirmed.
+      // Shared with the RFID tap: many sessions per day, one open at a time, server clock, idempotent
       const requestId = req.body.requestId || req.get('Idempotency-Key') || undefined;
       try {
         if (action === 'checkout') {
@@ -854,7 +772,7 @@ const createManualAttendance = async (req, res, next) => {
       }
     }
 
-    // ---- Walk-in guest (no account, no pass) --------------------------------
+    // Walk-in guest (no account, no pass)
     if (action === 'checkout') {
       return res.status(400).json({ success: false, message: 'Walk-in guests have no check-out. Use a visitor pass to track a visit.' });
     }
@@ -975,16 +893,8 @@ const rejectStudentId = async (req, res, next) => {
   }
 };
 
-// The other half of approveStudentId: lets an admin undo a previous
-// approval — e.g. it turns out the ID wasn't genuine, or eligibility
-// has lapsed — sending the submission back to 'pending' so it shows up
-// for re-review rather than staying stuck as a permanent "Verified"
-// with no way back. Also switches the student discount off, since an
-// unverified ID shouldn't keep student pricing active (mirrors
-// approveStudentId turning it on). Only ever operates on the most
-// recent APPROVED submission for this member — never a 'rejected' one,
-// which has its own distinct meaning and shouldn't be resurrected as
-// 'pending' by this action.
+// The other half of approveStudentId: lets an admin undo a previous approval
+// Only ever operates on the most recent APPROVED submission for this member — never a 'rejected' one
 const unverifyStudentId = async (req, res, next) => {
   try {
     const user = await User.findOne({ _id: req.params.id, role: 'user' });
@@ -1018,9 +928,7 @@ const unverifyStudentId = async (req, res, next) => {
   }
 };
 
-// ---- Admin Settings: password-change OTP ----
-// req.user._id is the admin's own id here — protect+admin (applied to
-// this whole router in adminRoutes.js) guarantees that.
+// Admin Settings
 
 const sendPasswordChangeOtp = async (req, res, next) => {
   try {

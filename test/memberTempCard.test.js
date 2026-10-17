@@ -1,12 +1,5 @@
-// test/memberTempCard.test.js - run with:  npm test
-//
-// Member temporary-card flow end to end (issue -> tap -> attendance ->
-// return -> reuse), against the real service/controller code with the Mongoose
-// models replaced by a small in-memory store (same approach as
-// visitorFlow.test.js). The store also simulates the unique indexes the models
-// declare, so duplicate-assignment / duplicate-attendance paths are exercised.
-// It verifies application logic; it does NOT prove real MongoDB semantics, so
-// the staging checklist still applies.
+// test/memberTempCard.test.js - run with: npm test
+// The store also simulates the unique indexes the models declare
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -24,10 +17,10 @@ const Subscription = require('../models/Subscription');
 const TempCardAssignment = require('../models/TempCardAssignment');
 const cardLookup = require('../services/rfidCardLookup');
 
-// ---------------------------------------------------------------- fake store
+// Fake store
 let seq = 0;
 const nid = () => String(++seq).padStart(24, '0');
-// Ids compare by value, and a populated document compares by its _id (as Mongo does).
+// Ids compare by value, and a populated document compares by its _id (as Mongo does)
 const idv = (v) => String(v && v._id ? v._id : v);
 const same = (a, b) => idv(a) === idv(b);
 const isNil = (v) => v === null || v === undefined;
@@ -101,20 +94,17 @@ function install(Model, store, defaults = {}, uniqueCheck = () => {}) {
 }
 
 const cards = []; const attendance = []; const users = []; const subs = []; const assignments = [];
-const holding = (d) => d.holdsCard !== false; // schema default is true
+const holding = (d) => d.holdsCard !== false;
 install(RFIDCard, cards, { active: true, cardType: 'MEMBER' }, (d, s) => {
   if (s.some((x) => x.cardId === d.cardId)) throw dup();
 });
 install(Attendance, attendance, {}, (d, s) => {
-  // mirrors the partial unique indexes: one_open_session_per_member { userId } where openSession,
-  // and the requestId / checkOutRequestId keys
   if (d.openSession === true && s.some((x) => x.openSession === true && same(x.userId, d.userId))) throw dup();
   if (typeof d.requestId === 'string' && s.some((x) => x.requestId === d.requestId)) throw dup();
 });
 install(User, users, { isActive: true, role: 'user' });
 install(Subscription, subs);
 install(TempCardAssignment, assignments, { status: 'ACTIVE', holdsCard: true }, (d, s) => {
-  // mirrors one_active_per_member and one_holder_per_card
   if (d.status === 'ACTIVE' && s.some((x) => x.status === 'ACTIVE' && same(x.memberId, d.memberId))) throw dup();
   if (holding(d) && s.some((x) => holding(x) && same(x.tempCardId, d.tempCardId))) throw dup();
 });
@@ -128,14 +118,14 @@ socketUtil.emitToAdmins = () => {}; socketUtil.emitToUser = () => {};
 const scanErrors = [];
 const subscriptionService = require('../services/subscriptionService');
 const deductions = [];
-subscriptionService.recordAttendanceSession = async (userId, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(userId)); return { deducted: true }; }; // mimics the real service for a repeat session
+subscriptionService.recordAttendanceSession = async (userId, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(userId)); return { deducted: true }; };
 
 const attendanceService = require('../services/attendanceService');
 const tempCardService = require('../services/tempCardService');
 const tempCtl = require('../controllers/tempCardController');
 const rfid = require('../controllers/rfidController');
 
-// ------------------------------------------------------------------- helpers
+// Helpers
 const UID_ORIG = 'AAAA1111', UID_ORIG2 = 'BBBB2222', UID_ORIG3 = 'CCCC3333', UID_SPARE = 'D0D0D0D0', UID_SPARE2 = 'E1E1E1E1';
 const admin = { _id: 'admin1', role: 'admin' };
 const day = 24 * 3600 * 1000;
@@ -143,7 +133,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const res = () => { const r = { code: 200, body: null, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
 const call = async (fn, req) => { const r = res(); await fn({ user: admin, body: {}, query: {}, params: {}, ...req }, r, (e) => { throw e; }); return r; };
 const issue = (memberId, tempCardUid, extra = {}) => call(tempCtl.issueToMember, { body: { memberId, tempCardUid, originalNotPresent: true, ...extra } });
-// Quiet reader: move the last-signal marker back past the debounce window instead of sleeping.
+// Quiet reader
 const settle = () => cards.forEach((c) => { if (c.lastScannedAt) c.lastScannedAt = new Date(Date.now() - 60_000); if (c.lastSignalAt) c.lastSignalAt = new Date(Date.now() - 60_000); });
 const tap = async (uid) => { settle(); return attendanceService.processScan(uid); };
 const cardOf = (uid) => cards.find((c) => c.cardId === uid);
@@ -165,7 +155,7 @@ test.beforeEach(() => {
   M2 = addMember('Juan Dela Cruz', { cardUid: UID_ORIG2 });
 });
 
-// ------------------------------------------------------------------- issuance
+// Issuance
 test('issue: creates an ACTIVE assignment; original card untouched; no new member/visitor record', async () => {
   const origBefore = JSON.stringify({ ...cardOf(UID_ORIG), userId: String(M1._id) });
   const usersBefore = users.length;
@@ -179,7 +169,7 @@ test('issue: creates an ACTIVE assignment; original card untouched; no new membe
   assert.equal(deductions.length, 0, 'issuing must not deduct');
   assert.ok(cardOf(UID_SPARE).memberAssignmentId);
   assert.equal(cardOf(UID_SPARE).cardType, 'TEMPORARY');
-  // expires at the end of the Manila day
+  // Expires at the end of the Manila day
   assert.ok(new Date(r.body.data.expiresAt) > new Date());
   assert.ok(new Date(r.body.data.expiresAt) - new Date() < day);
 });
@@ -218,9 +208,9 @@ test('issue: expired / inactive / no-subscription / deactivated members are refu
 });
 
 test('issue: refused while the member is checked in; allowed after they time out (members may time in again)', async () => {
-  await tap(UID_ORIG); // inside
+  await tap(UID_ORIG);
   assert.equal((await issue(M1._id, UID_SPARE)).body.errorType, 'attendance_today_exists');
-  await tap(UID_ORIG); // timed out - a completed session today no longer blocks
+  await tap(UID_ORIG);
   const r = await issue(M1._id, UID_SPARE);
   assert.equal(r.code, 201);
 });
@@ -254,7 +244,7 @@ test('issue: untrusted payloads are rejected (operator objects, bad ids, bad UID
   assert.equal(assignments.length, 0);
 });
 
-// ------------------------------------------------------------ tap resolution
+// Tap resolution
 test('tap: the spare card resolves to the existing member; subscription deducted exactly once; attendance is MEMBER', async () => {
   await issue(M1._id, UID_SPARE);
   const out = await tap(UID_SPARE);
@@ -271,12 +261,12 @@ test('tap: the spare card resolves to the existing member; subscription deducted
 
 test('tap: original + temporary are the same member - sessions alternate in/out, one deduction per day', async () => {
   await issue(M1._id, UID_SPARE);
-  await tap(UID_SPARE);                       // Time-In via spare   (session 1)
-  const out = await tap(UID_ORIG);            // original card -> Time-Out of session 1
+  await tap(UID_SPARE);
+  const out = await tap(UID_ORIG);
   assert.equal(out.action, 'checkout');
   assert.equal(attendance.length, 1);
   assert.ok(attendance[0].checkOut);
-  const again = await tap(UID_SPARE);         // spare again -> NEW session (session 2)
+  const again = await tap(UID_SPARE);
   assert.equal(again.action, 'checkin');
   assert.equal(attendance.length, 2);
   assert.equal(attendance.filter((a) => !a.checkOut).length, 1, 'exactly one open session');
@@ -310,21 +300,19 @@ test('tap: a double tap of the same card is stopped by the atomic cooldown', asy
   assert.equal(results.filter((r) => r.status === 'rejected').length, 1);
 });
 
-// ------------------------------------------------------------- expiry/return
+// expiry/return
 test('expiry: enforced on the server at tap time; the card stays held until returned', async () => {
   const r = await issue(M1._id, UID_SPARE);
-  assignments[0].expiresAt = new Date(Date.now() - 1000); // the day ended
+  assignments[0].expiresAt = new Date(Date.now() - 1000);
   await assert.rejects(() => tap(UID_SPARE), (e) => e.errorType === 'temp_card_expired');
   assert.equal(attendance.length, 0);
   assert.equal(assignments[0].status, 'EXPIRED');
 
-  // still held: cannot be lent again, member cannot be issued another yet
   assert.equal((await issue(M2._id, UID_SPARE)).body.errorType, 'card_unavailable');
   assert.equal((await issue(M1._id, UID_SPARE2)).body.errorType, 'member_has_active_loan');
   const inv = await call(tempCtl.inventory, {});
   assert.equal(inv.body.data.find((c) => c.cardRef === UID_SPARE).state, 'EXPIRED');
 
-  // staff mark it returned -> free again
   const ret = await call(tempCtl.returnCard, { body: { id: cardOf(UID_SPARE)._id } });
   assert.equal(ret.code, 200);
   assert.equal(ret.body.data.status, 'RETURNED');
@@ -353,7 +341,7 @@ test('return: assignment ended, card AVAILABLE, returned tap denied, original ca
   assert.equal(orig.action, 'checkin');
   assert.equal(String(orig.user._id), String(M1._id));
 
-  // returning twice is refused, not silently repeated
+  // Returning twice is refused, not silently repeated
   const again = await call(tempCtl.returnCard, { body: { id: cardOf(UID_SPARE)._id } });
   assert.equal(again.body.data.alreadyAvailable, true);
   assert.ok(issued.body.data._id);
@@ -363,7 +351,6 @@ test('return: a card whose loan is already closed returns 200 alreadyAvailable (
   const issued = await issue(M1._id, UID_SPARE);
   assert.equal(issued.code, 201);
   const card = cardOf(UID_SPARE);
-  // simulate drift: assignment closed but the card still points at it
   const loan = assignments.find((a) => same(a._id, card.memberAssignmentId));
   loan.status = 'RETURNED';
   loan.holdsCard = false;
@@ -374,14 +361,13 @@ test('return: a card whose loan is already closed returns 200 alreadyAvailable (
   assert.equal(r.body.data.alreadyAvailable, true);
   assert.ok(!cardOf(UID_SPARE).memberAssignmentId, 'stale pointer must be cleared');
 
-  // and the card is immediately reusable
   assert.equal((await issue(M2._id, UID_SPARE)).code, 201);
 });
 
 test('reuse: a returned card can be lent to another member or issued as a visitor pass; visits stay separate', async () => {
   await issue(M1._id, UID_SPARE);
   await tap(UID_SPARE);
-  await tap(UID_ORIG); // M1 done for the day
+  await tap(UID_ORIG);
   await call(tempCtl.returnCard, { body: { uid: UID_SPARE } });
 
   assert.equal((await issue(M2._id, UID_SPARE)).code, 201);
@@ -403,7 +389,7 @@ test('return: an unused visitor pass can be returned; a visitor who is inside ca
   await call(rfid.issueTemporaryCard, { body: { cardId: UID_SPARE, visitorName: 'Ana' } });
   await sleep(3);
   await call(rfid.issueTemporaryCard, { body: { cardId: UID_SPARE2, visitorName: 'Ben' } });
-  await tap(UID_SPARE2); // Ben is inside
+  await tap(UID_SPARE2);
   const inside = await call(tempCtl.returnCard, { body: { uid: UID_SPARE2 } });
   assert.equal(inside.code, 409);
   assert.equal(inside.body.errorType, 'visitor_inside');
@@ -414,7 +400,7 @@ test('return: an unused visitor pass can be returned; a visitor who is inside ca
 
 test('revoke: needs a reason, stops the card immediately, frees it, keeps history', async () => {
   await issue(M1._id, UID_SPARE);
-  const id = String(assignments[0]._id); // route params are always strings
+  const id = String(assignments[0]._id);
   assert.equal((await call(tempCtl.revokeAssignment, { params: { id }, body: {} })).code, 400);
   const r = await call(tempCtl.revokeAssignment, { params: { id }, body: { reason: 'Card lost' } });
   assert.equal(r.code, 200);
@@ -431,7 +417,7 @@ test('a never-issued or returned spare card grants nothing (CARD NOT ASSIGNED, n
   assert.equal(attendance.length, 0);
 });
 
-// -------------------------------------------------------------- concurrency
+// Concurrency
 test('concurrency: two admins lending the SAME card to different members -> exactly one wins', async () => {
   const [a, b] = await Promise.all([issue(M1._id, UID_SPARE), issue(M2._id, UID_SPARE)]);
   assert.deepEqual([a.code, b.code].sort(), [201, 409]);
@@ -455,7 +441,7 @@ test('concurrency: a visitor issue and a member loan racing for one blank card -
   assert.equal(!!c.memberAssignmentId && !!c.visitorName, false, 'card is never both');
 });
 
-// ----------------------------------------------------------------- listings
+// Listings
 test('visitor list excludes member loans and blank spares; inventory shows everything', async () => {
   await issue(M1._id, UID_SPARE);
   await sleep(3);
@@ -465,7 +451,7 @@ test('visitor list excludes member loans and blank spares; inventory shows every
   const inv = await call(tempCtl.inventory, {});
   assert.equal(inv.body.data.length, 2);
   assert.deepEqual(inv.body.data.map((c) => c.type).sort(), ['DAY_VISITOR', 'MEMBER_TEMP']);
-  // the visitor revoke endpoint refuses a member loan
+  // The visitor revoke endpoint refuses a member loan
   const rv = await call(rfid.revokeTemporaryCard, { params: { id: cardOf(UID_SPARE)._id } });
   assert.equal(rv.code, 409);
 });
@@ -485,13 +471,13 @@ test('member search: shows eligibility, registered card and loan state; ignores 
 
 test('self-heal: a card write lost after return is repaired by the next inventory read', async () => {
   await issue(M1._id, UID_SPARE);
-  assignments[0].status = 'RETURNED'; assignments[0].holdsCard = false; // assignment closed, card still points at it
+  assignments[0].status = 'RETURNED'; assignments[0].holdsCard = false;
   assert.ok(cardOf(UID_SPARE).memberAssignmentId);
   await call(tempCtl.inventory, {});
   assert.equal(cardOf(UID_SPARE).memberAssignmentId, undefined);
 });
 
-// ------------------------------------------------------- permissions (HTTP)
+// Permissions (HTTP)
 test('permissions: unauthenticated and non-admin callers cannot issue, return or revoke', async () => {
   const express = require('express');
   const router = require('../routes/rfidRoutes');

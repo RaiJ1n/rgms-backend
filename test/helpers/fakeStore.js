@@ -1,7 +1,4 @@
-// Tiny in-memory stand-in for Mongoose models, shared by the newer tests.
-// Supports the query/update operators these code paths use and lets a test
-// declare the unique indexes the real schema has (via `uniqueCheck`). It
-// verifies application logic; it does NOT prove real MongoDB behaviour.
+// Tiny in-memory stand-in for Mongoose models, shared by the newer tests
 let seq = 0;
 const nid = () => `a${String(++seq).padStart(23, '0')}`;
 const idv = (v) => String(v && v._id ? v._id : v);
@@ -59,7 +56,7 @@ function install(Model, store, defaults = {}, uniqueCheck = () => {}) {
     return [...rows].sort((a, b) => ((a[k] > b[k]) - (a[k] < b[k])) * dir);
   };
   Model.create = async (data) => {
-    // yield once so concurrent callers genuinely interleave around the write
+    // Yield once so concurrent callers genuinely interleave around the write
     await Promise.resolve();
     const d = wrap({ _id: nid(), createdAt: new Date(), updatedAt: new Date(), ...defaults, ...data });
     uniqueCheck(d, store);

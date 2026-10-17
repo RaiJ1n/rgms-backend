@@ -1,10 +1,4 @@
 // services/paymentQueryService.js
-//
-// ONE implementation of "which payments match these filters, in which order"
-// that the Payment History list, its Excel export and its summary report all
-// call — so the table, the spreadsheet and the totals can never disagree, and
-// filtering/sorting happen in the database (correct with pagination) instead
-// of on whichever page the browser happened to load.
 const mongoose = require('mongoose');
 const Payment = require('../models/Payment');
 const User = require('../models/User');
@@ -15,7 +9,7 @@ const { parseRange } = require('../utils/dateRange');
 const STATUSES = ['pending', 'approved', 'rejected'];
 const CUSTOMER_TYPES = ['MEMBER', 'WALK_IN'];
 
-// Public sort keys -> what the pipeline actually sorts on.
+// Public sort keys -> what the pipeline actually sorts on
 const SORT_FIELDS = {
   date: 'createdAt',
   amount: 'amount',
@@ -26,24 +20,16 @@ const SORT_FIELDS = {
   status: 'status',
 };
 
-// Query-string values arrive as whatever the client sent (`?status[$ne]=x`
-// parses to an object). Only ever accept plain strings.
+// Query-string values arrive as whatever the client sent (`?status[$ne]=x` parses to an object)
 const str = (v) => (typeof v === 'string' ? v.trim() : '');
 
-/**
- * Builds the Mongo match for a set of Payment History filters.
- * Returns { filter } or { error }.
- *
- * Filters: startDate/endDate (inclusive Manila days), method, status,
- * planId (package), customerType, search (customer name, transaction number,
- * reference number).
- */
+// Builds the Mongo match for a set of Payment History filters
+// Filters: startDate/endDate (inclusive Manila days), method, status, planId (package), customerType, search
 async function buildFilter(query = {}) {
   const filter = {};
 
-  // `?status[$ne]=x` / `?method[$gt]=` arrive as OBJECTS. Reject anything that
-  // is not a plain string outright rather than silently dropping the filter
-  // (which would show the admin MORE rows than they asked for).
+  // `?status[$ne]=x` / `?method[$gt]=` arrive as OBJECTS
+  // Reject anything that is not a plain string outright rather than silently dropping the filter
   for (const key of ['startDate', 'endDate', 'method', 'status', 'planId', 'customerType', 'search']) {
     if (query[key] !== undefined && typeof query[key] !== 'string') {
       return { error: `Invalid value for "${key}".` };
@@ -76,8 +62,7 @@ async function buildFilter(query = {}) {
   const customerType = str(query.customerType).toUpperCase();
   if (customerType && customerType !== 'ALL') {
     if (!CUSTOMER_TYPES.includes(customerType)) return { error: 'Invalid customer type.' };
-    // Payments created before customerType existed have no value — they are
-    // member payments, so MEMBER must match "anything that is not WALK_IN".
+    // Payments created before customerType existed have no value — they are member payments
     filter.customerType = customerType === 'WALK_IN' ? 'WALK_IN' : { $ne: 'WALK_IN' };
   }
 
@@ -102,9 +87,7 @@ function parseSort(query = {}) {
   return { key, field: SORT_FIELDS[key], order };
 }
 
-// match -> join member + package (so we can sort by their NAMES) -> sort ->
-// page -> reshape to the same populated form the frontend already reads
-// (`p.userId.fullname`, `p.planId.name`).
+// Match -> join member + package
 function listPipeline(filter, sort, skip, limit) {
   const stages = [
     { $match: filter },
@@ -117,7 +100,7 @@ function listPipeline(filter, sort, skip, limit) {
         _planSort: { $toLower: { $ifNull: ['$_plan.name', ''] } },
       },
     },
-    { $sort: { [sort.field]: sort.order, _id: sort.order } }, // _id: stable order across pages
+    { $sort: { [sort.field]: sort.order, _id: sort.order } },
   ];
   if (skip) stages.push({ $skip: skip });
   if (limit) stages.push({ $limit: limit });
@@ -156,12 +139,7 @@ async function listPayments(query, { page, limit, skip }) {
   return { data, total, sort };
 }
 
-/**
- * Totals for the SAME filter set. Revenue counts only APPROVED payments —
- * pending/rejected rows are listed in the counts but never add to money.
- * "Cash" is the existing 'Walk-in' payment method (money handed over at the
- * front desk); GCash is 'GCash'.
- */
+// Totals for the SAME filter set
 async function summarize(filter) {
   const rows = await Payment.aggregate([
     { $match: filter },
@@ -176,7 +154,7 @@ async function summarize(filter) {
 
   const uniquePlanIds = new Map();
   for (const r of rows) if (r._id.planId) uniquePlanIds.set(String(r._id.planId), r._id.planId);
-  const planIds = [...uniquePlanIds.values()]; // keep real ObjectIds for the $in
+  const planIds = [...uniquePlanIds.values()];
   const plans = planIds.length ? await MembershipPlan.find({ _id: { $in: planIds } }).select('name') : [];
   const planName = new Map(plans.map((p) => [String(p._id), p.name]));
 

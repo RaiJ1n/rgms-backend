@@ -1,6 +1,4 @@
-// Unique-member attendance counting. Pure logic (no database): the reference
-// reducer mirrors the Mongo pipeline stage-for-stage, and the pipeline shape
-// is asserted separately.
+// Unique-member attendance counting
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const A = require('../services/attendanceAnalytics');
@@ -17,7 +15,7 @@ const run = (rows, interval, s, e) => {
 };
 const DAY = ['2026-10-14T00:00:00+08:00', '2026-10-14T23:59:59+08:00'];
 
-// The exact scenario from the brief.
+// The exact scenario from the brief
 const brief = () => [
   row('A', '2026-10-14T07:00:00+08:00'), row('A', '2026-10-14T10:00:00+08:00'), row('A', '2026-10-14T15:00:00+08:00'),
   row('B', '2026-10-14T08:00:00+08:00'),
@@ -80,16 +78,16 @@ test('visitors/walk-ins are never counted as members; employees are excluded', (
   ];
   const { buckets, totals } = run(rows, 'day', ...DAY);
   assert.equal(buckets[0].uniqueMembers, 1);
-  assert.equal(buckets[0].nonMembers, 3); // each visitor/walk-in row is its own visit
+  assert.equal(buckets[0].nonMembers, 3);
   assert.equal(totals.uniqueMembers, 1);
   assert.equal(totals.nonMembers, 3);
 });
 
 test('Manila day boundaries: 00:10 Manila is the NEW day even though it is the previous day in UTC', () => {
   const rows = [
-    row('A', '2026-10-14T23:30:00+08:00'), // 15:30Z same date
-    row('B', '2026-10-15T00:10:00+08:00'), // 16:10Z previous UTC date
-    row('C', '2026-10-15T07:59:00+08:00'), // 23:59Z previous UTC date
+    row('A', '2026-10-14T23:30:00+08:00'),
+    row('B', '2026-10-15T00:10:00+08:00'),
+    row('C', '2026-10-15T07:59:00+08:00'),
   ];
   const { buckets } = run(rows, 'day', '2026-10-14T00:00:00+08:00', '2026-10-15T23:59:59+08:00');
   assert.deepEqual(buckets.map((b) => [b.key, b.uniqueMembers]), [['2026-10-14', 1], ['2026-10-15', 2]]);

@@ -1,8 +1,4 @@
 // services/attendanceQueryService.js
-//
-// The ONE place that turns the admin attendance filters (date range, status,
-// name search) into a Mongo filter. Shared by the table (GET /rfid/logs) and the
-// Excel export (GET /rfid/logs/export), so the export always matches the table.
 const User = require('../models/User');
 const Coach = require('../models/Coach');
 const escapeRegex = require('../utils/escapeRegex');

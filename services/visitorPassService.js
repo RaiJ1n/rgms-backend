@@ -1,33 +1,13 @@
 // services/visitorPassService.js
-//
-// Single place that defines what a visitor pass's STATUS is and when its
-// physical RFID card is AVAILABLE for another visitor.
-//
-// A visitor pass is an RFIDCard with cardType 'TEMPORARY' (there is no
-// separate VisitorPass collection). Its lifecycle:
-//
-//   issued ──► PENDING/UPCOMING ──check-in──► ACTIVE ──check-out──► CHECKED_OUT
-//                                                                      │
-//                                         card is AVAILABLE again ◄────┘
-//
-// Source of truth: the card document (active, validFrom/Until, checkedInAt,
-// checkedOutAt). Those two timestamps are written in the SAME operation as the
-// Attendance check-in/out (attendanceService.js), and reconcilePass() repairs
-// the only possible drift (attendance closed but card write lost).
 const RFIDCard = require('../models/RFIDCard');
 const Attendance = require('../models/Attendance');
 
-// Precedence (highest first): REVOKED > CHECKED_OUT > EXPIRED > UPCOMING >
-// ACTIVE (inside) / PENDING (valid, not used yet).
-// CHECKED_OUT deliberately outranks "still inside the validity window".
-// A spare card that has never been issued, or was returned by a member, has no
-// visitor identity and no validity window. It grants nothing until issued.
+// Precedence (highest first)
 function isUnassigned(card) {
   return !card.memberAssignmentId && !card.visitorName && !card.validFrom && !card.validUntil;
 }
 
 function passStatus(card, now = new Date()) {
-  // Lent to a member (see TempCardAssignment) - not a visitor pass at all.
   if (card.memberAssignmentId) return 'MEMBER_LOAN';
   if (!card.active) return 'REVOKED';
   if (isUnassigned(card)) return 'UNASSIGNED';
@@ -37,26 +17,23 @@ function passStatus(card, now = new Date()) {
   return card.checkedInAt ? 'ACTIVE' : 'PENDING';
 }
 
-// A card can be handed to a new visitor once its visit is over (checked out),
-// revoked, or its day has passed. It can NOT be re-issued while it is
-// PENDING / UPCOMING / ACTIVE — a pass validity date ending is not what
-// releases a card that is still live; a checkout is.
+// A card can be handed to a new visitor once its visit is over (checked out), revoked
+// A card can be handed to a new visitor once its visit is over (checked out), revoked, or its day has passed
 const RELEASED_STATUSES = ['CHECKED_OUT', 'EXPIRED', 'REVOKED', 'UNASSIGNED'];
 function isCardAvailable(card, now = new Date()) {
   return RELEASED_STATUSES.includes(passStatus(card, now));
 }
 
-// Mongo filter equivalent of isCardAvailable() — used for the atomic
-// re-issue so two admins can never both claim the same card.
+// Mongo filter equivalent of isCardAvailable() — used for the atomic re-issue
 function availableFilter(now = new Date()) {
   return {
     cardType: 'TEMPORARY',
-    memberAssignmentId: null, // never while lent to a member
+    memberAssignmentId: null,
     $or: [
       { active: false },
       { checkedOutAt: { $ne: null } },
       { validUntil: { $lt: now } },
-      { validUntil: null, visitorName: null }, // spare card with no current holder
+      { validUntil: null, visitorName: null },
     ],
   };
 }
@@ -79,14 +56,10 @@ function presentPass(card, now = new Date()) {
   };
 }
 
-// Repairs a card whose attendance was closed but whose own checkedOutAt was
-// never written (legacy rows, or a failed second write). Attendance is the
-// record of what physically happened, so it wins. Returns the (possibly
-// updated) card document.
+// Repairs a card whose attendance was closed but whose own checkedOutAt was never written
 async function reconcilePass(card) {
   if (!card || card.cardType !== 'TEMPORARY' || card.checkedOutAt || !card.active) return card;
-  // Member loans and blank spares have no visitor visit to repair; their old
-  // attendance rows belong to a member and must not be copied onto the card.
+  // Member loans and blank spares have no visitor visit to repair
   if (card.memberAssignmentId || isUnassigned(card)) return card;
   const since = card.assignedAt || card.validFrom || new Date(0);
   const latest = await Attendance.findOne({ rfidCardId: card._id, createdAt: { $gte: since } })

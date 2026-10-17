@@ -1,22 +1,10 @@
-// One-time migration: backfills durationValue/durationUnit on
-// MembershipPlan documents that already exist in the live database from
-// before these fields were added.
-//
-// Run once with:  node scripts/migratePlanDurations.js
-//
-// Matches each plan's existing `duration` string (case-insensitive)
-// against the same four labels the old subscriptionService.js switch
-// statement used to handle. Anything that doesn't match — including a
-// plan like "Student Plan" that was never supported by the old switch at
-// all — is left alone and printed out so it can be set by hand in Admin
-// Settings (Edit Plan) using the new duration value/unit fields.
+// One-time migration
 require('dotenv').config();
 const mongoose = require('mongoose');
 const connectDB = require('../config/db');
 const MembershipPlan = require('../models/MembershipPlan');
 
-// Maps old free-text `duration` labels to the new numeric fields.
-// Extend this list if your live data has other legacy labels.
+// Maps old free-text `duration` labels to the new numeric fields
 const legacyDurationMap = {
   'daily pass': { durationValue: 1, durationUnit: 'day' },
   'weekly pass': { durationValue: 7, durationUnit: 'day' },

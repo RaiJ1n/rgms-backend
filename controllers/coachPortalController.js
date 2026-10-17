@@ -7,20 +7,13 @@ const WorkoutPlan = require('../models/Workoutplan');
 const WorkoutPlanProgress = require('../models/WorkoutPlanProgress');
 const cloudinary = require('../config/cloudinary');
 const socketUtil = require('../utils/socket');
-// Shared with the member's own medical-document view (Section 4:
-// "Medical Documents" on the Client Details page a coach sees) — reuses
-// the exact same "mint a fresh signed URL, never persist/hand out a raw
-// one" helper rather than duplicating it, same reasoning as
-// adminController.getMemberMedicalDocument reusing it for the admin side.
+// Shared with the member's own medical-document view
 const { buildMedicalDocumentResponse } = require('./userController');
 const passwordChangeOtpService = require('../services/passwordChangeOtpService');
 const { generateOtp, hashOtp } = require('../utils/generateOtp');
 const emailService = require('../services/emailService');
 
-// Fire-and-forget Cloudinary cleanup, same helper/pattern as
-// userController.js's deleteCloudinaryImage — kept as a local copy here
-// rather than exported/shared since it's a two-line utility, not shared
-// state.
+// Fire-and-forget Cloudinary cleanup, same helper/pattern as userController.js's deleteCloudinaryImage
 function deleteCloudinaryImage(publicId) {
   if (!publicId) return;
   cloudinary.uploader.destroy(publicId).catch((err) => {
@@ -28,11 +21,7 @@ function deleteCloudinaryImage(publicId) {
   });
 }
 
-// Everything here runs behind protectCoach (see coachRoutes.js) — req.coach
-// is the authenticated coach, never taken from a param or body. A coach
-// can only ever see their own classes, never another coach's, and never
-// by guessing an id — getMyClassRoster below double-checks this even
-// though the query itself already scopes to req.coach._id.
+// Everything here runs behind protectCoach (see coachRoutes.js) — req.coach is the authenticated coach
 
 const getMyClasses = async (req, res, next) => {
   try {
@@ -45,13 +34,8 @@ const getMyClasses = async (req, res, next) => {
   }
 };
 
-// Roster for one of this coach's own classes. Reuses the same
-// attendees->members shape as adminController.getClassMembers so the
-// frontend list-rendering logic can be shared/consistent, but this is a
-// deliberately separate endpoint (not the admin one reused with a looser
-// middleware) — a coach must never be able to view another coach's roster
-// by id-guessing, which is why instructorId is checked explicitly below
-// rather than trusting that only assigned coaches would know a class id.
+// Roster for one of this coach's own classes
+// Reuses the same attendees->members shape as adminController.getClassMembers
 const getMyClassRoster = async (req, res, next) => {
   try {
     const gymClass = await GymClass.findById(req.params.id)
@@ -90,10 +74,7 @@ const getMyClassRoster = async (req, res, next) => {
   }
 };
 
-// ---- Personal Information (Section 5) ----
-// req.coach is already the full User document (minus password), fetched
-// fresh from the DB by protectCoach on every request — same as
-// userController.getProfile just returning req.user directly.
+// Personal Information (Section 5) req.coach is already the full User document (minus password)
 const getMyProfile = async (req, res, next) => {
   try {
     res.json({ success: true, data: req.coach });
@@ -110,11 +91,7 @@ const updateMyProfile = async (req, res, next) => {
     const coach = await User.findById(req.coach._id).select('-password');
     if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
 
-    // fullname/email intentionally reuse the same account fields the
-    // existing auth system already stores — see the spec's own
-    // instruction not to duplicate fields the account system already
-    // has. Everything else here is the coach-only fields added to
-    // User.js for this feature.
+    // fullname/email intentionally reuse the same account fields the existing auth system already stores
     const {
       fullname,
       age,
@@ -167,15 +144,8 @@ const uploadMyProfilePhoto = async (req, res, next) => {
   }
 };
 
-// ---- Settings (Section 1) ----
-// Deliberately separate from getMyProfile/updateMyProfile above — those
-// are "Personal Information" (public-facing profile shown to clients);
-// this is account-level Settings (notification preferences, password),
-// same split already used for Client (UserProfile.vue vs Settings.vue)
-// and Admin (their own profile section vs the Security section on the
-// same page). Kept in this controller rather than a new file since it's
-// the same req.coach-scoped, protectCoach-gated pattern as everything
-// else here.
+// Settings (Section 1) Deliberately separate from getMyProfile/updateMyProfile above
+// Settings (Section 1) Deliberately separate from getMyProfile/updateMyProfile above — those are "Personal Information"
 
 const getMySettings = async (req, res, next) => {
   try {
@@ -192,13 +162,8 @@ const getMySettings = async (req, res, next) => {
   }
 };
 
-// Send/Resend the notification-email ownership code (Coach Settings ->
-// Notification, Group 8). Sent to the CANDIDATE address itself
-// (req.body.email) rather than the coach's own account email, since
-// proving the coach can read mail at THAT address is the entire point.
-// Same 60s cooldown / 10-minute expiry convention as
-// passwordChangeOtpService, kept independent here since it tracks a
-// pending value the password flow has no equivalent of.
+// Send/Resend the notification-email ownership code (Coach Settings -> Notification, Group 8)
+// Same 60s cooldown / 10-minute expiry convention as passwordChangeOtpService, kept independent here
 const sendNotificationEmailOtp = async (req, res, next) => {
   try {
     const email = (req.body.email || '').trim().toLowerCase();
@@ -223,9 +188,6 @@ const sendNotificationEmailOtp = async (req, res, next) => {
     coach.notificationEmailOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
     coach.notificationEmailOtpLastSentAt = new Date();
     coach.notificationEmailPendingValue = email;
-    // A fresh code always resets verified state — the previously-saved
-    // address (if any) is untouched until Save is clicked with a
-    // matching, successfully-verified code.
     coach.notificationEmailVerified = false;
     await coach.save();
 
@@ -250,9 +212,6 @@ const updateMySettings = async (req, res, next) => {
     if (!coach) return res.status(404).json({ success: false, message: 'Coach not found' });
 
     const { notificationEmail, otp } = req.body;
-    // Empty string is valid here — it's how a coach clears the override
-    // and falls back to their login email for notifications. Clearing
-    // needs no verification; setting/changing to a real address does.
     if (notificationEmail !== undefined) {
       const normalized = notificationEmail.trim().toLowerCase();
 
@@ -264,7 +223,6 @@ const updateMySettings = async (req, res, next) => {
         coach.notificationEmailOtpLastSentAt = undefined;
         coach.notificationEmailPendingValue = undefined;
       } else if (normalized === coach.notificationEmail && coach.notificationEmailVerified) {
-        // Unchanged from the already-verified value — nothing to do.
       } else {
         if (!otp) {
           return res.status(400).json({ success: false, message: 'Please verify this email with the code sent to it first' });
@@ -287,7 +245,6 @@ const updateMySettings = async (req, res, next) => {
 
         coach.notificationEmail = normalized;
         coach.notificationEmailVerified = true;
-        // Single-use: clear the code so it can't be replayed.
         coach.notificationEmailOtp = undefined;
         coach.notificationEmailOtpExpires = undefined;
         coach.notificationEmailOtpLastSentAt = undefined;
@@ -310,9 +267,7 @@ const updateMySettings = async (req, res, next) => {
   }
 };
 
-// Send/Resend the verification code to the coach's own login email.
-// Same OTP fields, cooldown and email template as Admin Settings' and
-// the member's "Send Code" flow — see passwordChangeOtpService.js.
+// Send/Resend the verification code to the coach's own login email
 const sendMyPasswordChangeOtp = async (req, res, next) => {
   try {
     const result = await passwordChangeOtpService.requestPasswordChangeOtp(req.coach._id);
@@ -322,11 +277,7 @@ const sendMyPasswordChangeOtp = async (req, res, next) => {
   }
 };
 
-// Same current-password-required pattern as userController's
-// change-password for members, now also requiring a verified OTP sent
-// to the coach's email before the change is allowed — same
-// passwordChangeOtpService used by the member flow (Admin Settings has
-// its own separate copy of this same pattern in adminService.js).
+// Same current-password-required pattern as userController's change-password for members
 const changeMyPassword = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -346,11 +297,7 @@ const changeMyPassword = async (req, res, next) => {
   }
 };
 
-// ---- Client requests (Sections 6/7) ----
-// Every query below is scoped to req.coach._id — a coach can only ever
-// see or act on their own requests/clients, never another coach's
-// (Section 15, rule 6), enforced here server-side rather than trusted
-// from the frontend.
+// Client requests (Sections 6/7) Every query below is scoped to req.coach._id
 
 const getMyRequests = async (req, res, next) => {
   try {
@@ -368,7 +315,7 @@ const getMyRequests = async (req, res, next) => {
   }
 };
 
-// Accepted requests only — "current client list" (Section 6/7).
+// Accepted requests only
 const getMyClients = async (req, res, next) => {
   try {
     const clients = await CoachRegistrationRequest.find({ coachId: req.coach._id, status: 'accepted' })
@@ -381,36 +328,20 @@ const getMyClients = async (req, res, next) => {
   }
 };
 
-// ---- Client Details (Section 4: coach viewing one of their own,
-// already-accepted clients) ----
-//
-// Shared guard: only an ACCEPTED CoachRegistrationRequest between this
-// coach and this client authorizes access — pending, rejected, or no
-// relationship at all must all be treated the same as "not your
-// client." This is enforced here, on the backend, rather than trusted
-// from whatever list the frontend happens to already be showing —
-// Section 6: "A Coach must not be able to access another Coach's
-// clients by manually changing a URL, ID, request parameter, or
-// frontend state."
+// Client Details
 async function assertAcceptedClient(coachId, clientId) {
   return CoachRegistrationRequest.findOne({ coachId, clientId, status: 'accepted' });
 }
 
 // Fields safe to show THIS client's own coach — includes medical info
-// (Section 4 explicitly calls this out), unlike getMyClients' list view
-// above, which only needs enough to render a name/avatar row. Still
-// excludes password (via .select) and anything not relevant to a coach
-// safely customizing this client's classes/programs.
+// Still excludes password (via .select) and anything not relevant to a coach safely customizing this client's classes/programs
 const CLIENT_DETAIL_FIELDS =
   'fullname email phone address photo medicalConditions medicalAllergies emergencyContactName emergencyContactPhone medicalNotes medicalConsentGiven medicalDocuments createdAt';
 
 const getClientDetail = async (req, res, next) => {
   try {
     const relationship = await assertAcceptedClient(req.coach._id, req.params.id);
-    // Deliberately the same 404 whether the id doesn't exist, belongs to
-    // someone who was never this coach's client, or belongs to another
-    // coach's client — same "don't let id-probing distinguish reasons"
-    // principle as coachDirectoryController.getDisplayedCoach.
+    // Deliberately the same 404 whether the id doesn't exist
     if (!relationship) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
@@ -419,13 +350,6 @@ const getClientDetail = async (req, res, next) => {
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
     const safeClient = client.toObject();
-    // Medical documents: metadata only (Section 4: "See the list of
-    // uploaded medical documents... See the document/file name...").
-    // url/public_id are never handed out directly here — they're
-    // Cloudinary `authenticated` resources anyway (see User.js) — a
-    // coach opening one goes through getClientMedicalDocument below,
-    // which mints a fresh signed URL and re-checks this same
-    // relationship, same convention as the member's own profile view.
     safeClient.medicalDocuments = (client.medicalDocuments || []).map((doc) => ({
       _id: doc._id,
       fileName: doc.fileName,
@@ -434,12 +358,7 @@ const getClientDetail = async (req, res, next) => {
       uploadedAt: doc.uploadedAt,
     }));
 
-    // Questionnaire answers from the registration request itself —
-    // already fetched above for the authorization check, so this is
-    // free (no extra query). Preserves the "view this client's
-    // registration answers" feature the coach-side client list already
-    // had, now folded into the one dedicated details view instead of a
-    // separate modal.
+    // Questionnaire answers from the registration request itself
     safeClient.registrationAnswers = relationship.answers || [];
     safeClient.clientSince = relationship.reviewedAt || relationship.createdAt;
 
@@ -449,15 +368,7 @@ const getClientDetail = async (req, res, next) => {
   }
 };
 
-// Powers the "Current Workout" tab on Coach -> Client Details (Group 7):
-// every plan THIS coach has assigned to this client, each with its
-// components (name/sets/reps, snapshotted on the plan) and, alongside
-// each component, that client's own progress entry — specifically the
-// free-text notes they've left against it (WorkoutPlanProgress.entries),
-// since those notes are what the spec means by "Notes left by the
-// member/client". Re-checks the same accepted-client relationship as
-// getClientDetail/getClientMedicalDocument, independently, for the same
-// "each request re-verifies access on its own" reason.
+// Powers the "Current Workout" tab on Coach -> Client Details (Group 7)
 const getClientWorkout = async (req, res, next) => {
   try {
     const relationship = await assertAcceptedClient(req.coach._id, req.params.id);
@@ -508,13 +419,7 @@ const getClientWorkout = async (req, res, next) => {
   }
 };
 
-// Mirrors userController.viewMedicalDocument's signed-URL pattern, just
-// re-scoped to "this coach's own accepted client" instead of "the
-// logged-in member's own document" — reuses the same
-// buildMedicalDocumentResponse helper so both stay in sync, and
-// re-checks the coach-client relationship independently of
-// getClientDetail (this is its own request; nothing from an earlier
-// request is trusted).
+// Mirrors userController.viewMedicalDocument's signed-URL pattern
 const getClientMedicalDocument = async (req, res, next) => {
   try {
     const relationship = await assertAcceptedClient(req.coach._id, req.params.id);
@@ -540,9 +445,7 @@ const acceptRequest = async (req, res, next) => {
     const request = await CoachRegistrationRequest.findById(req.params.id);
     if (!request) return res.status(404).json({ success: false, message: 'Registration request not found' });
 
-    // Rule #5: a coach can only accept/reject their OWN requests — not
-    // just filtered out of the list, actively rejected here even if
-    // someone guesses another coach's request id.
+    // Rule #5
     if (request.coachId.toString() !== req.coach._id.toString()) {
       return res.status(403).json({ success: false, message: 'You are not authorized to review this request' });
     }
@@ -592,11 +495,7 @@ const rejectRequest = async (req, res, next) => {
   }
 };
 
-// ---- Notifications (coach bell — Section 12) ----
-// Unlike adminController.getNotifications (a single shared inbox every
-// admin sees, unscoped), these MUST filter on recipientId — a coach must
-// never see another coach's notifications just because the query forgot
-// to scope it (Section 19).
+// Notifications
 const getMyNotifications = async (req, res, next) => {
   try {
     const notifications = await Notification.find({ recipientId: req.coach._id })
@@ -611,10 +510,7 @@ const getMyNotifications = async (req, res, next) => {
 
 const markNotificationRead = async (req, res, next) => {
   try {
-    // Scoped to recipientId in the filter itself (not just looked up by
-    // id then trusted) — a coach guessing/enumerating another coach's
-    // notification id gets the same 404 as a nonexistent one, never a
-    // 403 that would confirm the id belongs to someone else.
+    // Scoped to recipientId in the filter itself (not just looked up by id then trusted)
     const notification = await Notification.findOneAndUpdate(
       { _id: req.params.id, recipientId: req.coach._id },
       { read: true },

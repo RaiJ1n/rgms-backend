@@ -1,7 +1,4 @@
-// Regression: the attendance export must be a structurally valid .xlsx.
-// (exceljs' streaming WorkbookWriter produced a zip whose workbook parts were
-// all 0 bytes, so Excel reported the file as corrupt.) Runs the real
-// controller over a real HTTP response with only the DB layer stubbed.
+// Regression
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -33,7 +30,6 @@ function stub(docs) {
 
 async function call(query = {}) {
   const server = http.createServer((req, res) => {
-    // Minimal Express-style helpers for the plain Node response.
     res.status = (c) => { res.statusCode = c; return res; };
     res.json = (o) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(o)); };
     return ctrl.exportLogs({ query }, res, (e) => { res.statusCode = 500; res.end(JSON.stringify({ success: false, message: e.message })); });
@@ -56,13 +52,13 @@ test('export is a valid workbook: zip signature, headers, one row per session', 
     assert.equal(Number(r.headers['content-length']), body.length);
     assert.equal(body.subarray(0, 2).toString(), 'PK');
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(body);                       // throws if any workbook part is empty/invalid
+    await wb.xlsx.load(body);
     const ws = wb.getWorksheet('Attendance');
     assert.equal(ws.getRow(1).getCell(3).value, 'Name');
-    assert.equal(ws.rowCount, 3);                   // header + 2 sessions for the SAME member
+    assert.equal(ws.rowCount, 3);
     assert.equal(ws.getRow(2).getCell(2).value, ws.getRow(3).getCell(2).value);
     assert.notEqual(ws.getRow(2).getCell(1).value, ws.getRow(3).getCell(1).value);
-    assert.ok(!ws.getRow(3).getCell(6).value);      // open session: Time Out stays blank
+    assert.ok(!ws.getRow(3).getCell(6).value);
   } finally { restore(); }
 });
 

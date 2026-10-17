@@ -1,13 +1,10 @@
-// test/cooldown5s.test.js - the 5-second per-card duplicate-tap rule, with a
-// MOCKED clock (no waiting). Runs the real service/controller code over the
-// in-memory model store used by the other suites: it proves application logic,
-// not MongoDB behaviour (the atomic claim is one conditional update on the card
-// document; see services/attendanceService.js claimSignal).
+// test/cooldown5s.test.js - the 5-second per-card duplicate-tap rule, with a MOCKED clock (no waiting)
+// Runs the real service/controller code over the in-memory model store used by the other suites
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
 process.env.NODE_ENV = 'test';
-delete process.env.RFID_DEBOUNCE_MS;       // use the real defaults
+delete process.env.RFID_DEBOUNCE_MS;
 delete process.env.RFID_DEBOUNCE_SKEW_MS;
 delete process.env.RFID_HASH_SECRET;
 
@@ -38,7 +35,7 @@ const emitted = [];
 socketUtil.emitToAdmins = (ev, payload) => { emitted.push([ev, payload]); };
 socketUtil.emitToUser = () => {};
 const deductions = [];
-require('../services/subscriptionService').recordAttendanceSession = async (id, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(id)); return { deducted: true }; }; // mimics the real service for a repeat session
+require('../services/subscriptionService').recordAttendanceSession = async (id, o = {}) => { if (o.firstOfDay === false) return { deducted: false }; deductions.push(String(id)); return { deducted: true }; };
 
 const attendanceService = require('../services/attendanceService');
 const rfidController = require('../controllers/rfidController');
@@ -46,9 +43,9 @@ const scanDedup = require('../services/scanDedup');
 const scanConfig = require('../utils/scanConfig');
 
 const day = 24 * 3600 * 1000;
-const START = Date.parse('2026-10-14T03:00:00Z'); // 11:00 in Manila
-let clock; // mocked Date
-const at = (ms) => { clock.setTime(START + ms); };   // jump to START + ms
+const START = Date.parse('2026-10-14T03:00:00Z');
+let clock;
+const at = (ms) => { clock.setTime(START + ms); };
 const scan = (uid, opts) => attendanceService.processScan(uid, opts).then((r) => r.action, (e) => e.errorType);
 const httpRes = () => { const r = { code: 200, body: null, status(c) { r.code = c; return r; }, json(b) { r.body = b; return r; } }; return r; };
 async function postScan(body) {
@@ -107,7 +104,7 @@ test('first tap creates attendance; repeats inside the window create nothing and
 
 test('a new intentional tap after the window works, again and again, the same day', async () => {
   const seq = [];
-  for (let i = 0; i < 4; i += 1) { at(i * 5000); seq.push(await scan('AAAA1111')); } // exactly 5.000 s apart
+  for (let i = 0; i < 4; i += 1) { at(i * 5000); seq.push(await scan('AAAA1111')); }
   assert.deepEqual(seq, ['checkin', 'checkout', 'checkin', 'checkout']);
   const rows = rowsOf(M);
   assert.equal(rows.length, 2, 'two sessions on one day');
@@ -162,8 +159,8 @@ test('retry of the SAME tap that arrives after the window (bridge timeout + retr
   at(0);
   const first = await postScan({ cardId: 'AAAA1111', scanId: 'bridge-tap-0001' });
   assert.equal(first.body.action, 'checkin');
-  at(8400);                 // bridge: 8 s timeout + 0.4 s pause, then it retries
-  scanDedup._reset();       // ...and the server process has restarted meanwhile
+  at(8400);
+  scanDedup._reset();
   const retry = await postScan({ cardId: 'AAAA1111', scanId: 'bridge-tap-0001' });
   assert.equal(retry.code, 200);
   assert.equal(retry.body.action, 'checkin', 'the original result, not a toggle to check-out');

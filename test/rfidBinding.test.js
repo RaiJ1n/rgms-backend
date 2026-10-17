@@ -1,6 +1,3 @@
-// run with: node --test test/rfidBinding.test.js  (no database needed)
-// Model statics are stubbed in memory; this verifies the decision logic, not real
-// MongoDB semantics (the unique-index race is simulated with an E11000 error).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 process.env.NODE_ENV = 'test';
@@ -108,7 +105,7 @@ test('temporary card still IN USE is not bound: lent to a member, or visitor pas
 test('Coach model is an empty stub (as in production): binding still works, no 500', async () => {
   setup([{ cardId: UID, cardType: 'MEMBER', userId: M2 }]);
   const saved = Coach.exists;
-  delete Coach.exists; // models/Coach.js is `module.exports = {}`
+  delete Coach.exists;
   try {
     const other = await call({ userId: M1, cardId: UID });
     assert.equal(other.status, 409, 'real owner still blocks');
@@ -132,7 +129,7 @@ test('STALE loan pointer (loan already RETURNED) does not block binding; card co
 });
 
 test('RETURNED temporary card (spare, nobody holds it) converts to a member card', async () => {
-  setup([{ cardId: UID, cardType: 'TEMPORARY' }]); // what releaseCard leaves behind
+  setup([{ cardId: UID, cardType: 'TEMPORARY' }]);
   const r = await call({ userId: M1, cardId: UID });
   assert.equal(r.status, 201);
   assert.equal(cards.length, 1);
@@ -212,7 +209,7 @@ test('unauthorized: POST /api/rfid/register without an admin token is rejected b
       body: JSON.stringify({ userId: M1, cardId: UID }),
     });
     assert.ok(res.status === 401 || res.status === 403, `got ${res.status}`);
-    // and a device key alone must NOT unlock the admin route
+    // And a device key alone must NOT unlock the admin route
     const res2 = await fetch(`http://127.0.0.1:${port}/api/rfid/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-device-key': 'whatever' },

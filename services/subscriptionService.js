@@ -4,11 +4,8 @@ const Payment = require('../models/Payment');
 const socketUtil = require('../utils/socket');
 const { formatLocalDateLabel } = require('../utils/localDate');
 
-// durationValue/durationUnit replace the old string-matched `duration`
-// field ("Daily Pass", "Annual Membership", ...) for date math. Any plan
-// an admin creates from now on — including one-off plans like a
-// "Student Plan" — expires correctly automatically, with no code change
-// needed here, as long as it has these two fields set.
+// durationValue/durationUnit replace the old string-matched `duration` field
+// Any plan an admin creates from now on — including one-off plans like a "Student Plan"
 const defaultPlans = [
   { name: 'Daily', duration: 'Daily Pass', durationValue: 1, durationUnit: 'day', price: 120, studentPrice: 100, description: '1 day access to gym' },
   { name: 'Weekly', duration: 'Weekly Pass', durationValue: 7, durationUnit: 'day', price: 800, studentPrice: 700, description: '7 days access to gym' },
@@ -32,28 +29,18 @@ const getAllPlans = async () => {
   return plans;
 };
 
-// Small helper so service-layer errors carry the right HTTP status instead
-// of falling through errorMiddleware as a generic 500.
 const httpError = (message, statusCode) => {
   const err = new Error(message);
   err.statusCode = statusCode;
   return err;
 };
 
-// Calendar math in the gym's own timezone (Asia/Manila, UTC+8, no DST) —
-// never the server's. The old version used setDate/setMonth, which run in the
-// server's local zone AND overflow at month-ends: 31 Jan + 1 month became
-// 3 Mar (2 Mar in a leap year). Now 31 Jan + 1 month = 28/29 Feb.
-//
-// Semantics (unchanged from before, now documented): a membership is a
-// half-open window [startDate, endDate) of real instants. Access lapses at the
-// same wall-clock time of day it was bought, `duration` later — a Daily plan
-// bought 3:00pm lasts until 3:00pm the next day. An extension starts exactly
-// where the previous window ends, so windows touch but never overlap.
+// Calendar math in the gym's own timezone (Asia/Manila, UTC+8, no DST) — never the server's
+// An extension starts exactly where the previous window ends, so windows touch but never overlap
 const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 const addDuration = (date, value, unit) => {
-  const shifted = new Date(new Date(date).getTime() + MANILA_OFFSET_MS); // read UTC fields as Manila wall-clock
+  const shifted = new Date(new Date(date).getTime() + MANILA_OFFSET_MS);
   switch (unit) {
     case 'day':
       shifted.setUTCDate(shifted.getUTCDate() + value);
@@ -65,31 +52,20 @@ const addDuration = (date, value, unit) => {
     case 'year': {
       const months = unit === 'year' ? value * 12 : value;
       const day = shifted.getUTCDate();
-      shifted.setUTCDate(1); // avoid overflow while changing the month
+      shifted.setUTCDate(1);
       shifted.setUTCMonth(shifted.getUTCMonth() + months);
       const lastDay = new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, 0)).getUTCDate();
       shifted.setUTCDate(Math.min(day, lastDay));
       break;
     }
     default:
-      // Should be unreachable — durationUnit is schema-enforced — but
-      // fail loudly rather than silently producing a wrong date if the
-      // schema and this list ever drift apart.
+      // Should be unreachable
       throw httpError(`Unsupported duration unit: ${unit}`, 400);
   }
   return new Date(shifted.getTime() - MANILA_OFFSET_MS);
 };
 
-// The user's currently-effective expiration, independent of how many
-// Subscription rows they've accumulated across past purchases and
-// independent of each row's stored `status` (nothing in this codebase
-// flips status from 'active' to 'expired' as time passes, so status
-// alone can't be trusted to answer "is this still active right now").
-//
-// We just take the latest endDate the user has ever been granted:
-//   - if it's still in the future, that's the base to extend from
-//   - if it's in the past (or there's no subscription at all), the new
-//     membership starts fresh from now
+// The user's currently-effective expiration
 const getExpiryBaseDate = async (userId) => {
   const latest = await Subscription.findOne({ userId }).sort({ endDate: -1 });
   const now = new Date();
@@ -99,11 +75,8 @@ const getExpiryBaseDate = async (userId) => {
   return now;
 };
 
-// Two approvals for the same member landing at the same moment would both
-// read the same "latest endDate" and both extend from it — the second grant
-// would be swallowed. Serialising per member closes that. (In-process lock:
-// correct for the single PM2 instance this app runs as. If you ever run the
-// backend in cluster mode, move this to a DB-level guard.)
+// Two approvals for the same member landing at the same moment would both read the same "latest
+// 
 const userLocks = new Map();
 const withUserLock = async (userId, fn) => {
   const key = String(userId);
@@ -121,12 +94,7 @@ const withUserLock = async (userId, fn) => {
   }
 };
 
-// The member's continuous coverage right now: from the earliest start among
-// their not-yet-expired windows to the furthest end. Extensions are
-// back-to-back, so this is one unbroken span even when several purchases are
-// stacked. Dashboards use it so "start" is when the current run of membership
-// began, not the start of a queued future window.
-// `rows` = that member's Subscription documents (any order).
+// The member's continuous coverage right now
 const getCoverageWindow = (rows, now = new Date()) => {
   if (!rows || !rows.length) return null;
   const live = rows.filter((r) => r.endDate > now);
@@ -142,8 +110,8 @@ const createSubscriptionUnlocked = async ({ userId, planId, paymentId }) => {
     throw httpError('Plan not found', 404);
   }
   if (!plan.durationValue || !plan.durationUnit) {
-    // Plan predates the durationValue/durationUnit fields, or was created
-    // without them. Fail clearly instead of guessing at an expiration.
+    // Plan predates the durationValue/durationUnit fields, or was created without them
+    // Fail clearly instead of guessing at an expiration
     throw httpError('This plan is missing a configured duration. Please update it in Admin Settings before it can be purchased.', 400);
   }
 
@@ -166,14 +134,8 @@ const createSubscriptionUnlocked = async ({ userId, planId, paymentId }) => {
     throw httpError('A subscription already exists for this payment', 400);
   }
 
-  // Extend from the user's current effective expiration instead of
-  // always starting from now — this is the actual fix. If they have no
-  // subscription yet, or their latest one has already lapsed,
-  // getExpiryBaseDate() falls back to `now` on its own (requirement 5).
-  // The new window STARTS where the current one ends (or now, if lapsed /
-  // none) — previously startDate was always "now", so a renewal bought on
-  // 30 Sep for a plan running to 30 Oct was stored as 30 Sep -> 30 Nov, i.e.
-  // overlapping the window already paid for.
+  // Extend from the user's current effective expiration instead of always starting from now
+  // Extend from the user's current effective expiration instead of always starting from now — this is the actual fix
   const baseDate = await getExpiryBaseDate(userId);
   const startDate = baseDate;
   const endDate = addDuration(baseDate, plan.durationValue, plan.durationUnit);
@@ -189,19 +151,14 @@ const createSubscriptionUnlocked = async ({ userId, planId, paymentId }) => {
       status: 'active',
     });
   } catch (err) {
-    // Belt-and-suspenders for the findOne check above: if two requests
-    // for the same payment race each other, the unique index on
-    // paymentId (see models/Subscription.js) rejects the loser here
-    // instead of silently granting a second extension.
+    // Belt-and-suspenders for the findOne check above
     if (err.code === 11000) {
       throw httpError('A subscription already exists for this payment', 400);
     }
     throw err;
   }
 
-  // Single choke point for every subscription creation (member
-  // self-checkout and admin payment-approval both land here), so this is
-  // the one place that needs to say "membership counts changed."
+  // Single choke point for every subscription creation
   socketUtil.emitToAdmins('stats:refresh');
   socketUtil.emitToUser(userId, 'subscription:updated', subscription);
 
@@ -211,50 +168,15 @@ const createSubscriptionUnlocked = async ({ userId, planId, paymentId }) => {
 const createSubscription = (args) => withUserLock(args.userId, () => createSubscriptionUnlocked(args));
 
 const getMySubscription = async (userId) => {
-  // The currently-controlling subscription is whichever row has the
-  // furthest-out endDate — same reasoning as getExpiryBaseDate above.
-  // Previously this was an unsorted findOne, which could return an old,
-  // already-superseded row once a user had purchased more than once.
   return Subscription.findOne({ userId }).sort({ endDate: -1 }).populate('planId');
 };
 
-// A plan grants unlimited-looking access for exactly 1 day (durationValue
-// 1 / durationUnit 'day') — the "Daily"/Day Pass plan seeded above. It's
-// identified by its actual duration, not by name, so an admin renaming
-// the plan later doesn't silently break this check.
+// A plan grants unlimited-looking access for exactly 1 day (durationValue 1 / durationUnit 'day')
+// It's identified by its actual duration, not by name
 const isDayPassPlan = (plan) => plan?.durationValue === 1 && plan?.durationUnit === 'day';
 
-// Deducts one membership/session from the member's current subscription -
-// AT MOST ONCE PER MANILA DAY, atomically.
-//
-// Policy (unchanged): a "session" is a gym DAY, so the first eligible member
-// check-in of a Manila day costs one; further check-ins that day cost nothing.
-// Day Pass plans are never touched. The subscription is still chosen by the
-// existing rule (latest endDate). Callers: memberAttendanceService.doCheckIn,
-// which serves both the RFID tap and the admin manual-attendance endpoint.
-//
-// How "once per day" is enforced: ONE conditional update on the subscription,
-//   { _id, lastDeductedDayKey: { $ne: dayKey } }  ->  $inc sessionsUsed,
-//                                                      $set lastDeductedDayKey
-// $ne also matches a document where the field does not exist yet, so legacy
-// subscriptions need no migration. Two concurrent first-of-day requests cannot
-// both match: the loser gets null and deducts nothing. The marker is written in
-// the same update as the increment, so it is set only when a deduction really
-// happened, and a failed attempt can simply be retried by the next check-in.
-//
-// opts.dayKey      'YYYY-MM-DD' Manila day of the attendance (default: today).
-// opts.firstOfDay  false when the caller already knows this is NOT the member's
-//                  first session today. For a LEGACY subscription (marker never
-//                  written but sessionsUsed > 0) that means "an earlier session
-//                  today was already charged by the old code" - without this
-//                  guard the deploy day could charge such a member twice. For a
-//                  subscription that has a marker, or has never been charged, it
-//                  changes nothing: the deduction is still attempted.
-//
-// Returns { deducted, reason, subscription? }. reason is one of: deducted,
-// no_subscription, day_pass, already_deducted, legacy_assumed_deducted,
-// subscription_missing, unexpected_no_match. Database errors are THROWN (never
-// reported as a deduction) so the caller can warn staff.
+// Deducts one membership/session from the member's current subscription - AT MOST ONCE PER MANILA DAY
+// Deducts one membership/session from the member's current subscription - AT MOST ONCE PER MANILA DAY, atomically
 const recordAttendanceSession = async (userId, opts = {}) => {
   const dayKey = opts.dayKey || formatLocalDateLabel(new Date());
   const firstOfDay = opts.firstOfDay !== false;
@@ -278,7 +200,7 @@ const recordAttendanceSession = async (userId, opts = {}) => {
   );
   if (updated) return { deducted: true, reason: 'deducted', subscription: updated };
 
-  // Nothing matched. Work out why instead of guessing.
+  // Nothing matched
   const current = await Subscription.findById(subscription._id).select('lastDeductedDayKey sessionsUsed');
   if (!current) {
     console.error('[SUBSCRIPTION] deduction skipped: subscription disappeared', { userId: String(userId), subscriptionId: String(subscription._id) });

@@ -6,63 +6,24 @@ const RfidConfig = require('../models/RfidConfig');
 const { getScanMessage } = require('../utils/scanMessages');
 const { normalizeUid } = require('../utils/normalizeUid');
 
-// How long the initial "WELCOME / <name>" LCD message stays up before
-// being replaced by the "TIME IN / SUCCESS" stage — matches the 2-second
-// timing called out in the spec. This assumes the sketch simply
-// redisplays whatever it next receives over serial (the existing
-// behavior this file already relied on for every other message); it does
-// not require any sketch changes.
+// How long the initial "WELCOME / <name>" LCD message stays up before being replaced by the "TIME IN /
+// How long the initial "WELCOME / <name>" LCD message stays up before being replaced by the "TIME IN / SUCCESS" stage
 const LCD_STAGE_DELAY_MS = 2000;
 
-// ============================================================================
 // RFID SERVICE - Serial Port Management & Arduino Communication
-// ============================================================================
-//
-// Responsibilities:
-// 1. Detect available serial ports and identify which (if any) is an
-//    Arduino/USB-serial device, using USB VID/PID metadata — never a
-//    hardcoded COM number.
-// 2. Establish a serial connection with a chosen port (auto-detected at
-//    startup, or explicitly chosen by an admin via POST /api/rfid/connect).
-// 3. Parse incoming RFID UIDs.
-// 4. Delegate check-in/check-out decisions to attendanceService (shared
-//    with the REST /api/rfid/scan fallback, so there's one source of truth).
-// 5. Handle disconnections & auto-reconnect.
-// 6. Persist the chosen port (by USB metadata, not just its COM string) so
-//    a restart can re-find the same physical device even if Windows
-//    assigns it a different COM number.
-//
-// ============================================================================
+// Detect available serial ports and identify which (if any) is an Arduino/USB-serial device, using USB VID/PID metadata
 
 let serialPort = null;
 let parser = null;
 let connectionAttempts = 0;
 let currentBaudRate = 9600;
 let lastError = null;
-let lastConnectedDevice = null; // { vendorId, productId, serialNumber, friendlyName }
-// Binding-mode session (replaces the old bare boolean). The backend is the
-// single source of truth for "what does the next tap mean" — the frontend
-// (EditMember bind modal / Register page) sets this via
-// POST /api/rfid/registration-mode, and BOTH the serial path
-// (handleRFIDData) and the REST fallback (rfidController.scanCard) route
-// off it. Shape:
-//   { enabled, mode: 'register'|'bind', userId?, coachId?, startedAt, startedBy }
-// `mode` only affects the Arduino idle screen (MODE:REGISTER vs MODE:BIND);
-// routing treats both as "binding". `userId`/`coachId` is the pre-selected
-// owner (EditMember flow) enabling backend auto-bind so a tap binds even if
-// the frontend socket event is delayed/lost. The Register page sets no
-// owner (owner picked after the tap) → capture-only.
+let lastConnectedDevice = null;
+// Binding-mode session (replaces the old bare boolean)
 let bindingSession = { enabled: false, mode: 'register', userId: null, coachId: null, startedAt: null, startedBy: null };
-// Back-compat alias — everything historical referenced `registrationMode`.
+// Back-compat alias
 let registrationMode = false;
-// Safety net against stuck-ON binding mode: if an admin leaves the Bind
-// modal / Register page open (or closes the tab without the unmount POST
-// firing), every subsequent attendance tap would be routed to BINDING and
-// already-bound cards would never record attendance — easily misread as
-// "not recognized". The timer auto-disables binding after this long;
-// every fresh setRegistrationMode(true) refreshes it. Configurable via
-// BINDING_TIMEOUT_MS (default 2 minutes — long enough to pick an owner
-// and tap, short enough to self-heal a stuck session).
+// Safety net against stuck-ON binding mode: if an admin leaves the Bind modal / Register page open
 const BINDING_TIMEOUT_MS = Number(process.env.BINDING_TIMEOUT_MS || 120000);
 let bindingTimer = null;
 
@@ -84,25 +45,15 @@ function armBindingTimer() {
     try {
       socketUtil.emitToAdmins('rfid:status', exports.getStatus());
     } catch {
-      // Non-fatal: expiry must never throw.
+      // Non-fatal: expiry must never throw
     }
   }, BINDING_TIMEOUT_MS);
   if (bindingTimer.unref) bindingTimer.unref();
 }
-// ---------------------------------------------------------------------------
-// Split-deployment awareness (VPS backend + local scripts/rfidBridge.js).
-// On the VPS there is NO serial port, so `connected` (serial) is always
-// false there even while a healthy bridge PC is feeding taps in. The
-// bridge polls GET /rfid/device-status every few seconds; each poll stamps
-// `bridgeLastSeenAt`. getStatus() exposes `bridgeConnected` and a combined
-// `scannerReady` so the admin UI stops showing a permanent "Scanner
-// Disconnected" banner (which also hid the detected-UID box).
-// ---------------------------------------------------------------------------
+// Split-deployment awareness (VPS backend + local scripts/rfidBridge.js)
 const BRIDGE_STALE_MS = Number(process.env.BRIDGE_STALE_MS || 12000);
 let bridgeLastSeenAt = null;
 let bridgeInfo = null;
-// Last successful bind, so the bridge can show RFID BOUND on the LCD even
-// though it has no socket connection (see scripts/rfidBridge.js).
 let lastBound = null;
 
 exports.noteBridgeSeen = (info = {}) => {
@@ -117,15 +68,8 @@ exports.getLastBound = () => lastBound;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY_MS = 3000;
 
-// ============================================================================
-// Known USB vendor/product IDs for Arduino boards and the common
-// USB-to-serial chipsets used on clones (CH340/CH341, CP210x, FTDI).
-// This is what lets the app say "this is an Arduino" from the device's
-// actual USB identity rather than guessing from a COM number — a generic
-// `/COM[0-9]+/` regex (the old fallback here) would just as happily match
-// an unrelated serial device like a power controller, which is exactly
-// the kind of false positive this table exists to avoid.
-// ============================================================================
+// Known USB vendor/product IDs for Arduino boards and the common USB-to-serial chipsets used on clones
+// This is what lets the app say "this is an Arduino" from the device's actual USB identity rather than guessing
 const KNOWN_USB_SERIAL_DEVICES = [
   { vendorId: '2341', productId: '0043', name: 'Arduino Uno' },
   { vendorId: '2341', productId: '0001', name: 'Arduino Uno (rev3)' },
@@ -152,9 +96,7 @@ function identifyDevice(port) {
   );
 }
 
-// ============================================================================
 // Config persistence (RfidConfig — single document)
-// ============================================================================
 
 async function getConfig() {
   let config = await RfidConfig.findOne();
@@ -169,11 +111,7 @@ async function saveConfig(update) {
   return config;
 }
 
-// Does this currently-listed port look like the same physical device we
-// connected to before? Path match alone isn't enough — Windows can and
-// will reassign COM numbers, and a *different* device could end up on the
-// old saved path. Requiring the USB metadata to also match (where we have
-// it recorded) is what prevents "blindly reconnecting to a saved COM6".
+// Does this currently-listed port look like the same physical device we connected to before?
 function portMatchesConfig(port, config) {
   if (!config.preferredPort) return false;
   if (port.path !== config.preferredPort) return false;
@@ -196,8 +134,7 @@ function httpError(statusCode, message, errorType) {
   return err;
 }
 
-// Turns raw serialport open/IO errors into messages an admin can actually
-// act on, instead of a bare Node/OS error string.
+// Turns raw serialport open/IO errors into messages an admin can actually act on
 function friendlyOpenError(err) {
   const msg = ((err && err.message) || '').toLowerCase();
   if (msg.includes('access denied') || msg.includes('busy') || msg.includes('resource busy')) {
@@ -216,13 +153,7 @@ function emitStatus() {
   socketUtil.emitToAdmins('rfid:status', exports.getStatus());
 }
 
-// ============================================================================
-// EXPORT: List available serial ports with USB metadata
-// ============================================================================
-// Backs GET /api/rfid/ports. Returns every port Windows currently reports,
-// each flagged with isArduino so the frontend can label recognized devices
-// while still letting the admin pick any port manually (covers Arduino
-// clones using a chipset not in KNOWN_USB_SERIAL_DEVICES).
+// List available serial ports with USB metadata Backs GET /api/rfid/ports
 
 exports.listPorts = async () => {
   const ports = await SerialPort.list();
@@ -240,24 +171,13 @@ exports.listPorts = async () => {
   });
 };
 
-// ============================================================================
-// EXPORT: Initialize RFID Service (called at server startup)
-// ============================================================================
-// 1. Load the saved config (if any).
-// 2. If the saved port is still present AND still matches its saved USB
-//    metadata, reconnect to it.
-// 3. Otherwise, search the currently listed ports for a recognized
-//    Arduino/USB-serial chipset and connect to the first match.
-// 4. If nothing matches, leave the service disconnected — never guess.
+// Initialize RFID Service (called at server startup)
+// If nothing matches, leave the service disconnected — never guess
 
 exports.initRFID = async () => {
   console.log('[RFID] Initializing RFID service...');
 
-  // On the VPS there is no Arduino — the reader is plugged into the gym PC and
-  // reaches the API through scripts/rfidBridge.js. Without this switch the
-  // server latches onto its own motherboard port (/dev/ttyS0) from a saved
-  // setting and "sends" MODE:BIND into nothing. Set RFID_SERIAL_DISABLED=true
-  // in the VPS .env to skip all local serial handling.
+  // On the VPS there is no Arduino
   if (String(process.env.RFID_SERIAL_DISABLED || '').toLowerCase() === 'true') {
     console.log('[RFID] Local serial disabled (RFID_SERIAL_DISABLED=true) — expecting rfidBridge.js');
     return;
@@ -299,10 +219,7 @@ exports.initRFID = async () => {
   }
 };
 
-// ============================================================================
-// EXPORT: Connect to an explicit port (auto-detect at startup, or an
-// admin's manual choice via POST /api/rfid/connect)
-// ============================================================================
+// Connect to an explicit port (auto-detect at startup, or an admin's manual choice via POST /api/rfid/connect)
 
 exports.connectToPort = async (requestedPath, requestedBaudRate) => {
   if (!requestedPath) {
@@ -324,12 +241,6 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
     );
   }
 
-  // Already connected to this exact port at this baud rate — return the
-  // current status instead of closing + reopening the same port. The
-  // close/reopen cycle briefly releases the OS handle and the immediate
-  // re-open can fail with EBUSY/access-denied (surfaced as 409), which
-  // is exactly the self-inflicted "stuck selector" conflict: the
-  // service ends up disconnected even though nothing actually changed.
   if (serialPort && serialPort.isOpen && serialPort.path === requestedPath && currentBaudRate === baudRate) {
     return exports.getStatus();
   }
@@ -362,17 +273,8 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
       parser = serialPort.pipe(new ReadlineParser({ delimiter: '\n' }));
       parser.on('data', enqueueRFIDLine);
 
-      // Resync the Arduino's idle screen to the backend's current
-      // registrationMode. Covers the case where the backend restarts
-      // (registrationMode resets to false in memory) while the Arduino
-      // stays powered on and mid-registration — without this it would
-      // keep showing "REGISTER MODE" indefinitely since nothing else
-      // would tell it otherwise.
       exports.sendToArduino(`MODE:${!registrationMode ? 'ATTENDANCE' : bindingSession.mode === 'bind' ? 'BIND' : 'REGISTER'}`);
 
-      // FIX (kept from the original): both 'error' and 'close' fire on a
-      // real disconnect — routing both through the same guarded function
-      // avoids double reconnect timers.
       serialPort.on('error', (e) => {
         console.error('[RFID] Serial port error:', e.message);
         lastError = friendlyOpenError(e);
@@ -388,23 +290,17 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
     });
   });
   } catch (err) {
-    // Record the failure and broadcast it so every admin UI syncs to
-    // the real (disconnected) state instead of going stale. The
-    // service is intentionally left disconnected here — the old port
-    // was already closed above and the new open failed — so the next
-    // GET /status reflects reality and the frontend Port Selector can
-    // retry rather than sitting on a phantom connection.
+    // Record the failure and broadcast it so every admin UI syncs to the real
+    // Record the failure and broadcast it so every admin UI syncs to the real (disconnected) state instead of going stale
     lastError = err?.message || 'Failed to open the serial port.';
     try {
       emitStatus();
     } catch {
-      // Non-fatal: emitting to sockets must never mask the real error.
+      // Non-fatal
     }
     throw err;
   }
 
-  // Persist by USB metadata, not just the COM string — see
-  // portMatchesConfig() for why that matters on the next startup.
   await saveConfig({
     preferredPort: requestedPath,
     preferredVendorId: target.vendorId || null,
@@ -417,13 +313,8 @@ exports.connectToPort = async (requestedPath, requestedBaudRate) => {
   return exports.getStatus();
 };
 
-// ============================================================================
-// EXPORT: Disconnect the current serial port on admin request
-// ============================================================================
-// Backs POST /api/rfid/disconnect. Lets the admin cleanly release the
-// current port before picking another one, instead of relying solely
-// on connectToPort()'s implicit close. Idempotent: disconnecting while
-// already disconnected just returns the current (disconnected) status.
+// Disconnect the current serial port on admin request Backs POST /api/rfid/disconnect
+// Idempotent: disconnecting while already disconnected just returns the current (disconnected) status
 exports.disconnectPort = async () => {
   await closeCurrentPort();
   parser = null;
@@ -434,10 +325,6 @@ exports.disconnectPort = async () => {
 
 function closeCurrentPort() {
   return new Promise((resolve) => {
-    // removeAllListeners() strips the 'error' handler too. A write still
-    // queued on the old port then fails ("Operation aborted") with nobody
-    // listening, and Node kills the whole backend. Always leave a no-op
-    // 'error' listener on a port we are discarding.
     const old = serialPort;
     if (old) {
       old.removeAllListeners();
@@ -452,17 +339,10 @@ function closeCurrentPort() {
   });
 }
 
-// ============================================================================
-// FUNCTION: Handle RFID Data from Arduino
-// ============================================================================
-// Delegates the actual check-in/check-out decision to attendanceService,
-// the same function the REST /api/rfid/scan fallback uses.
+// FUNCTION
 
-// Serial lines are handled strictly one at a time, in the order they arrived.
-// Without this, a fast tap sequence ran as overlapping async handlers (each
-// awaiting the database), so tap 2 could start before tap 1 had finished and
-// the IN/OUT order was left to timing luck. Nothing is dropped: a tap that
-// arrives while another is processing simply waits its turn.
+// Serial lines are handled strictly one at a time, in the order they arrived
+// Without this, a fast tap sequence ran as overlapping async handlers (each awaiting the database)
 let scanChain = Promise.resolve();
 function enqueueRFIDLine(line) {
   scanChain = scanChain
@@ -473,39 +353,24 @@ function enqueueRFIDLine(line) {
 
 async function handleRFIDData(line) {
   const raw = line.trim();
-  // Canonical normalization: strips \r\n/whitespace, spaces, dashes,
-  // colons; uppercases. Arduino sends "A1B2C3D4" but IDE copy/paste or
-  // manual entry may yield "A1 B2 C3 D4" / lowercase / dashes.
+  // Canonical normalization
   const uid = normalizeUid(line);
   if (!uid) return;
 
   console.log(`[RFID] Serial incoming: ${raw} → normalized: ${uid}`);
 
-  // Broadcast every raw tap to admins BEFORE attempting attendance
-  // processing. AdminrfidRegistration.vue and AdminSettings.vue both
-  // listen for this to auto-fill/display the UID — it has to fire for
-  // unregistered cards too, so it can't live inside/after processScan
-  // (which only succeeds for cards already registered with an active
-  // subscription).
   socketUtil.emitToAdmins('rfid:scanned', { cardId: uid, at: new Date() });
 
   if (registrationMode) {
-    // BINDING MODE — the next tap is a registration candidate, NOT an
-    // attendance scan. A brand-new/unregistered UID is the EXPECTED case
-    // here and must never fall through to processScan (which would reject
-    // it as card_unregistered / "RFID NOT REGISTERED").
+    // BINDING MODE
     const ownerId = bindingSession.userId || bindingSession.coachId || null;
     const ownerType = bindingSession.userId ? 'member' : bindingSession.coachId ? 'employee' : null;
     console.log(`[RFID] OPERATION: BINDING (mode=${bindingSession.mode})`);
     console.log(`[RFID] SELECTED MEMBER: ${ownerId || '(none — capture only)'}`);
     console.log(`[RFID] EXISTING RFID MATCH: checking ${uid}...`);
 
-    // The single 'rfid:scanned' broadcast at the top of handleRFIDData
-    // already covered bind UIs — no second emit here, otherwise every
-    // bind tap triggers duplicate auto-bind POSTs.
-    // No pre-selected owner (Register page: owner picked AFTER the tap) —
-    // capture-only. Acknowledge detection; registration happens when the
-    // frontend POSTs /api/rfid/register, which then pushes RFID BOUND.
+    // The single 'rfid:scanned' broadcast at the top of handleRFIDData already covered bind UIs
+    // The single 'rfid:scanned' broadcast at the top of handleRFIDData already covered bind UIs — no second emit here
     if (!ownerId) {
       console.log(`[RFID] Binding mode (capture) — held ${uid} for registration (attendance skipped)`);
       exports.sendToArduino(`Card detected|${uid}`);
@@ -513,12 +378,7 @@ async function handleRFIDData(line) {
     }
 
     // Pre-selected owner (EditMember bind modal): auto-bind directly here
-    // so the tap binds even if the frontend socket round-trip is
-    // delayed/lost. Idempotent — a repeat tap for the same owner reports
-    // success; a UID owned by someone else is rejected as duplicate.
-    // The frontend's own POST /register (triggered by the rfid:scanned
-    // event above) may race this; it converges via the same duplicate
-    // check (frontend treats "already bound to this member" as success).
+    // Idempotent — a repeat tap for the same owner reports success; a UID owned by someone else is rejected as duplicate
     try {
       const RFIDCard = require('../models/RFIDCard');
       const User = require('../models/User');
@@ -607,52 +467,35 @@ async function handleRFIDData(line) {
     const { action, user } = await attendanceService.processScan(uid);
     console.log(`[RFID] ✓ ${action.toUpperCase()}: ${user.fullname}`);
 
-    // Two-stage LCD display per spec: "WELCOME / <name>" immediately,
-    // then "TIME IN / SUCCESS" (or the checkout equivalent) after a
-    // short pause, using the SAME "line1|line2" wire format the sketch
-    // already parses on every write — nothing about the protocol itself
-    // changes, just what gets sent and when. See utils/scanMessages.js
-    // for the exact copy and the note on why buzzer codes aren't sent.
     const msg = getScanMessage(action === 'checkin' ? 'success_checkin' : 'success_checkout');
     exports.sendToArduino(`${msg.lcdLine1}|${truncateForLcd(user.fullname)}`);
     setTimeout(() => {
       exports.sendToArduino(`${msg.lcdStage2.lcdLine1}|${msg.lcdStage2.lcdLine2}`);
     }, LCD_STAGE_DELAY_MS);
   } catch (err) {
-    // processScan already emits admin rfid:error events for every
-    // rejection case; this just logs and drives the LCD.
-    // The reader re-sending a card that is still on it: expected and frequent.
-    // Stay silent so the TIME IN / TIME OUT confirmation is not overwritten.
+    // processScan already emits admin rfid:error events for every rejection case
+    // Stay silent so the TIME IN / TIME OUT confirmation is not overwritten
     if (err.errorType === 'duplicate_signal') {
       console.log(`[RFID] Repeated reader signal for ${uid} ignored (same physical tap)`);
       return;
     }
     console.warn(`[RFID] Scan rejected for ${uid}: ${err.message}`);
 
-    // Distinct line1/line2 per errorType (unknown card, expired
-    // subscription, deactivated account, etc.) rather than a single
-    // "Access Denied|<reason>" for every case — matches the specific
-    // wording the spec calls for per scenario, so the LCD and the
-    // admin UI never disagree about why a scan was rejected.
+    // Distinct line1/line2 per errorType
     const msg = getScanMessage(err.errorType);
     exports.sendToArduino(`${msg.lcdLine1}|${msg.lcdLine2}`);
   }
 }
 
-// A 16x2 LCD only has 16 columns per line — this mirrors the sketch's own
-// truncation (per the comment above) so a very long name doesn't just get
-// cut off mid-character by the display; it's clipped consistently here too.
+// A 16x2 LCD only has 16 columns per line — this mirrors the sketch's own truncation
 function truncateForLcd(text, maxLength = 16) {
   if (!text) return '';
   return text.length > maxLength ? text.slice(0, maxLength) : text;
 }
 
-// ============================================================================
 // FUNCTION: Handle Disconnection & Auto-Reconnect
-// ============================================================================
 
-// Guards against handleDisconnection() running twice for the same
-// disconnect event (both 'error' and 'close' fire on a real unplug).
+// Guards against handleDisconnection() running twice for the same disconnect event
 let isHandlingDisconnection = false;
 
 function handleDisconnection() {
@@ -662,22 +505,11 @@ function handleDisconnection() {
   console.log('[RFID] Disconnected from Arduino');
 
   if (serialPort) {
-    // `serialPort.close()` called with no callback, on a port the OS
-    // already closed (physical unplug), doesn't throw synchronously — it
-    // emits a fresh 'error' event instead. Since we're potentially already
-    // inside an 'error' handler, that re-emission has nowhere to go and
-    // Node kills the process with "Unhandled 'error' event". Checking
-    // `isOpen` first, and always passing a callback, avoids that.
     if (serialPort.isOpen) {
       serialPort.close((err) => {
         if (err) console.warn('[RFID] Error while closing port:', err.message);
       });
     }
-    // removeAllListeners() also strips our own 'error' handler. Any write that
-    // was still queued when the port closed then fails with "Operation aborted"
-    // and emits 'error' on a listener-less stream -> Node throws "Unhandled
-    // 'error' event" and the whole backend dies. Keep a no-op listener on the
-    // dead port so those late errors are swallowed.
     serialPort.removeAllListeners();
     serialPort.on('error', () => {});
     serialPort = null;
@@ -702,9 +534,7 @@ function handleDisconnection() {
   }
 }
 
-// ============================================================================
-// EXPORT: Graceful Shutdown
-// ============================================================================
+// Graceful Shutdown
 
 exports.closeRFID = () => {
   if (serialPort && serialPort.isOpen) {
@@ -713,13 +543,9 @@ exports.closeRFID = () => {
   }
 };
 
-// ============================================================================
-// EXPORT: Send Message to Arduino
-// ============================================================================
+// Send Message to Arduino
 
 exports.sendToArduino = (message) => {
-  // `writable` is false while the stream is closing/destroyed — writing then
-  // is what produced "GetOverlappedResult: Operation aborted".
   if (!serialPort || !serialPort.isOpen || serialPort.writable === false || serialPort.destroyed) {
     console.warn('[RFID] Serial port not available');
     return false;
@@ -740,26 +566,7 @@ exports.sendToArduino = (message) => {
   }
 };
 
-// ============================================================================
-// EXPORT: Toggle Registration Mode
-// ============================================================================
-// Set to true while the Bind RFID Card modal (EditMember.vue) or the
-// Register New Card page (AdminrfidRegistration.vue) is open. See the
-// `bindingSession` comment above for why this changes scan handling.
-//
-// Also tells the Arduino's LCD idle screen to match, via the sketch's
-// MODE: command (see sketch_aug7d.ino's handleModeCommand). Distinct idle
-// screens per flow:
-//   bind modal     → MODE:BIND     ("BIND MODE / Tap new card")
-//   register page  → MODE:REGISTER ("REGISTER MODE / Tap new card")
-//   neither        → MODE:ATTENDANCE
-// A MODE command is a *persistent* idle-screen change, distinct from the
-// temporary scan-result messages sent elsewhere in this file (those
-// auto-revert after ~4s back to whatever MODE is currently set).
-//
-// `opts` (optional): { mode: 'bind'|'register', userId?, coachId?,
-// startedBy? }. Accepts the legacy bare-boolean call
-// (setRegistrationMode(true/false)) for backward compatibility.
+// Toggle Registration Mode Set to true while the Bind RFID Card modal
 exports.setRegistrationMode = (enabled, opts = {}) => {
   const on = typeof enabled === 'object' && enabled !== null ? !!enabled.enabled : !!enabled;
   const o = typeof enabled === 'object' && enabled !== null ? enabled : opts;
@@ -785,9 +592,7 @@ exports.setRegistrationMode = (enabled, opts = {}) => {
   exports.sendToArduino(`MODE:${!registrationMode ? 'ATTENDANCE' : bindingSession.mode === 'bind' ? 'BIND' : 'REGISTER'}`);
 };
 
-// ============================================================================
-// EXPORT: Get Connection Status
-// ============================================================================
+// Get Connection Status
 
 exports.getStatus = () => {
   return {
@@ -799,8 +604,7 @@ exports.getStatus = () => {
     device: lastConnectedDevice,
     registrationMode,
     binding: bindingSession,
-    // Split-deployment additions (additive — `connected` keeps its
-    // original serial-only meaning for AdminSettings.vue).
+    // Split-deployment additions
     bridgeConnected: !!(bridgeLastSeenAt && Date.now() - bridgeLastSeenAt.getTime() < BRIDGE_STALE_MS),
     bridgeLastSeenAt,
     bridge: bridgeInfo,

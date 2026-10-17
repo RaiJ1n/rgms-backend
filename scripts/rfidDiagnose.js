@@ -1,17 +1,4 @@
 // scripts/rfidDiagnose.js
-//
-// Finds the exact break in:
-//   RFID card -> RC522 -> Arduino -> USB serial -> PC -> DNS -> TLS -> Nginx
-//   -> Express -> device key -> backend mode
-//
-// Run on the PC the Arduino is plugged into (stop rfidBridge.js first — two
-// programs cannot open the same COM port):
-//
-//   node scripts/rfidDiagnose.js               # full check, 20s card capture
-//   node scripts/rfidDiagnose.js --listen 40   # capture window in seconds
-//   node scripts/rfidDiagnose.js --no-serial   # API checks only (no Arduino)
-//
-// It never prints the device key, and it never POSTs a card scan.
 
 const path = require('path');
 const dns = require('dns').promises;
@@ -20,7 +7,6 @@ try {
   dotenv.config({ path: path.join(__dirname, 'bridge.env') });
   dotenv.config({ path: path.join(__dirname, '..', '.env') });
 } catch {
-  /* optional */
 }
 
 const API_BASE = (process.env.API_BASE || 'https://api.remerfitnessgym.tech/api').replace(/\/$/, '');
@@ -46,7 +32,7 @@ async function timedFetch(url, opts = {}, ms = 10000) {
     const res = await fetch(url, { ...opts, signal: ctrl.signal });
     const text = await res.text();
     let json = null;
-    try { json = JSON.parse(text); } catch { /* html */ }
+    try { json = JSON.parse(text); } catch { }
     return { res, text, json, ms: Date.now() - start };
   } finally {
     clearTimeout(t);

@@ -1,9 +1,5 @@
-// test/dailyDeduction.mongo.test.js - REAL MongoDB integration test of the
-// atomic once-per-day deduction. It is SKIPPED unless MONGO_TEST_URI is set,
-// and it refuses to run against any database whose name does not contain
-// "test" (never point it at production). It creates and then deletes only its
-// own documents. Run:
-//   MONGO_TEST_URI="mongodb://127.0.0.1:27017/rgms_test" node --test test/dailyDeduction.mongo.test.js
+// test/dailyDeduction.mongo.test.js
+// test/dailyDeduction.mongo.test.js - REAL MongoDB integration test of the atomic once-per-day deduction
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -23,7 +19,7 @@ test('real MongoDB: concurrent first-of-day deductions charge once; legacy docs 
   const ids = { plan: new mongoose.Types.ObjectId(), user1: new mongoose.Types.ObjectId(), user2: new mongoose.Types.ObjectId() };
   try {
     await MembershipPlan.collection.insertOne({ _id: ids.plan, name: 'itest-plan', durationValue: 1, durationUnit: 'month' });
-    // Raw insert: a LEGACY document that has no lastDeductedDayKey at all.
+    // Raw insert
     await Subscription.collection.insertOne({ userId: ids.user1, planId: ids.plan, endDate: new Date(Date.now() + 864e7), sessionsUsed: 0 });
     await Subscription.collection.insertOne({ userId: ids.user2, planId: ids.plan, endDate: new Date(Date.now() + 864e7), sessionsUsed: 5 });
 
@@ -33,7 +29,6 @@ test('real MongoDB: concurrent first-of-day deductions charge once; legacy docs 
     assert.equal(s1.sessionsUsed, 1);
     assert.equal(s1.lastDeductedDayKey, '2026-10-14');
 
-    // Legacy, already charged today by old code (sessionsUsed > 0, no marker), later session.
     const g = await svc.recordAttendanceSession(ids.user2, { dayKey: '2026-10-14', firstOfDay: false });
     assert.equal(g.reason, 'legacy_assumed_deducted');
     assert.equal((await Subscription.collection.findOne({ userId: ids.user2 })).sessionsUsed, 5);

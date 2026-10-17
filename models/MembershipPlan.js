@@ -5,17 +5,12 @@ const planSchema = new mongoose.Schema({
           required: true,
             trim: true },
 
-  // Kept as a free-text display label ("Daily Pass", "Student Plan", etc.)
-  // shown on Membership.vue and receipts. No longer used for date math —
-  // see durationValue/durationUnit below.
+  // Kept as a free-text display label
   duration: { type: String, required: true,
               trim: true },
 
-  // Actual expiration math is derived from these two fields instead of
-  // string-matching `duration`. This is what fixes membership expiration
-  // being wrong/hardcoded regardless of plan, and lets any new plan
-  // (e.g. a Student Plan) work automatically without a code change in
-  // subscriptionService.js.
+  // Actual expiration math is derived from these two fields instead of string-matching `duration`
+  // This is what fixes membership expiration being wrong/hardcoded regardless of plan, and lets any new plan
   durationValue: { type: Number, required: true, min: 1 },
   durationUnit: {
     type: String,
@@ -26,8 +21,6 @@ const planSchema = new mongoose.Schema({
   price: { type: Number,
           required: true },
 
-  // Discounted price for members with a verified student ID
-  // (User.studentPromoActive). Falls back to `price` if unset.
   studentPrice: { type: Number },
 
   description: { type: String,

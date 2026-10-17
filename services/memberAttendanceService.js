@@ -1,28 +1,5 @@
 // services/memberAttendanceService.js
-//
-// The ONE place that opens and closes a member's attendance sessions. Used by
-// the RFID tap (attendanceService.processMemberScan) and by the admin manual
-// endpoint (adminController.createManualAttendance), so both follow the same
-// rules:
-//
-//   * A member can have many sessions per day (Time-In .. Time-Out each).
-//   * A member can have at most ONE open session at a time. This is enforced
-//     by the database: new sessions are written with openSession: true and a
-//     partial unique index on { userId } where openSession is true makes a
-//     second concurrent open session fail with E11000 - no matter how many
-//     requests arrive at once or from which entry point.
-//   * Time-Out closes the open session with one conditional update
-//     (checkOut still missing), so two simultaneous Time-Outs close it once.
-//   * An optional requestId (idempotency key) makes a retried request return
-//     the original result instead of repeating the action.
-//   * A subscription "session" is a gym DAY (the dashboard derives the total
-//     from the plan's day span), so only the FIRST Time-In of a Manila day
-//     deducts one. Further Time-Ins the same day deduct nothing (enforced by
-//     an atomic once-per-day marker on the subscription, lastDeductedDayKey).
-//   * Timestamps are the server's clock (`now`), never the client's.
-//   * Every action for one member runs through a per-member FIFO lock, so
-//     taps/requests for the same member are applied in the order they were
-//     received (in-process coordination; the DB index above is the guarantee).
+// This is enforced by the database: new sessions are written with openSession
 const Attendance = require('../models/Attendance');
 const subscriptionService = require('./subscriptionService');
 const { startOfLocalDay, formatLocalDateLabel } = require('../utils/localDate');
@@ -37,7 +14,7 @@ const fail = (message, statusCode, errorType) => {
 
 const sameId = (a, b) => String(a && a._id ? a._id : a) === String(b && b._id ? b._id : b);
 
-// Idempotency keys come from the client: keep them short and boring.
+// Idempotency keys come from the client: keep them short and boring
 const REQUEST_ID = /^[A-Za-z0-9_.:-]{8,100}$/;
 function cleanRequestId(raw) {
   if (raw === undefined || raw === null || raw === '') return undefined;
@@ -47,7 +24,7 @@ function cleanRequestId(raw) {
   return raw.trim();
 }
 
-// Today's open session for this member (Manila day), straight from the DB.
+// Today's open session for this member (Manila day), straight from the DB
 function findOpenSession(userId, now = new Date()) {
   return Attendance.findOne({
     userId,
@@ -57,9 +34,8 @@ function findOpenSession(userId, now = new Date()) {
   });
 }
 
-// A session left open on a PREVIOUS day (the member never tapped out) must not
-// lock them out of today. Its Time-Out stays empty - we never invent a
-// timestamp - and it is flagged so reports can show "no time-out recorded".
+// A session left open on a PREVIOUS day (the member never tapped out) must not lock them out of today
+// Its Time-Out stays empty - we never invent a timestamp - and it is flagged so reports can show "no time-out recorded"
 async function retireStaleOpenSessions(userId, now = new Date()) {
   await Attendance.updateMany(
     { userId, openSession: true, createdAt: { $lt: startOfLocalDay(now) } },
@@ -67,7 +43,7 @@ async function retireStaleOpenSessions(userId, now = new Date()) {
   );
 }
 
-// Time-In: always a NEW row; never touches an earlier session.
+// Time-In: always a NEW row; never touches an earlier session
 async function doCheckIn({ user, now = new Date(), rfidCardId, memberType, notes, requestId } = {}) {
   const rid = cleanRequestId(requestId);
   const userId = user._id;
@@ -101,15 +77,12 @@ async function doCheckIn({ user, now = new Date(), rfidCardId, memberType, notes
     });
   } catch (err) {
     if (err && err.code === 11000) {
-      // The OLD one-record-per-member-per-day unique index is still in the
-      // database: this is not a duplicate tap, it is a setup problem. Say so
-      // loudly instead of showing members "Scan Too Soon" forever.
+      // The OLD one-record-per-member-per-day unique index is still in the database
+      // The OLD one-record-per-member-per-day unique index is still in the database: this is not a duplicate tap
       if (/userId_1_dayKey_1/.test(`${err.message} ${JSON.stringify(err.keyPattern || {})}`)) {
         console.error('[ATTENDANCE] Old index userId_1_dayKey_1 still exists - run: node scripts/syncAttendanceIndexes.js --apply');
         throw fail('Attendance database setup is incomplete (old one-per-day index). Tell the admin.', 500, 'legacy_index');
       }
-      // Either the same request arrived twice at once, or another request
-      // opened a session an instant earlier. Neither may create a second row.
       if (rid) {
         const prior = await Attendance.findOne({ requestId: rid });
         if (prior && sameId(prior.userId, userId)) return { attendance: prior, action: 'checkin', replayed: true, deducted: false };
@@ -119,12 +92,8 @@ async function doCheckIn({ user, now = new Date(), rfidCardId, memberType, notes
     throw err;
   }
 
-  // One subscription session per member per Manila day. The deduction is
-  // attempted on EVERY Time-In and is idempotent (an atomic conditional update
-  // on the subscription, see subscriptionService.recordAttendanceSession), so
-  // a later session that day retries a deduction that failed earlier, and a
-  // concurrent or replayed request can never charge twice. `firstOfDay` only
-  // protects legacy subscriptions on the deploy day. Visitors never come here.
+  // One subscription session per member per Manila day
+  // The deduction is attempted on EVERY Time-In and is idempotent
   let deducted = false;
   let warning;
   const dayKey = formatLocalDateLabel(now);
@@ -135,15 +104,13 @@ async function doCheckIn({ user, now = new Date(), rfidCardId, memberType, notes
     const result = await subscriptionService.recordAttendanceSession(userId, { dayKey, firstOfDay: sessionsToday <= 1 });
     deducted = !!(result && result.deducted);
   } catch (err) {
-    // The attendance row IS saved; do not report a failed save, and do NOT
-    // claim a deduction. The next check-in today will retry it.
     console.error('[ATTENDANCE] session deduction failed after check-in', { userId: String(userId), attendanceId: String(attendance._id), error: err.message });
     warning = 'Attendance saved, but the subscription session could not be updated. Please tell the admin.';
   }
   return { attendance, action: 'checkin', replayed: false, deducted, warning };
 }
 
-// Time-Out: closes exactly the member's open session.
+// Time-Out: closes exactly the member's open session
 async function doCheckOut({ user, now = new Date(), requestId } = {}) {
   const rid = cleanRequestId(requestId);
   const userId = user._id;
@@ -177,10 +144,8 @@ async function doCheckOut({ user, now = new Date(), requestId } = {}) {
   return { attendance: closed, action: 'checkout', replayed: false };
 }
 
-// Looks a request id up in BOTH idempotency fields: a Time-In stores it as
-// requestId, a Time-Out as checkOutRequestId. Returns the original outcome or
-// null. `userId` (optional) guards against one id being reused for another
-// member.
+// Looks a request id up in BOTH idempotency fields: a Time-In stores it as requestId
+// Looks a request id up in BOTH idempotency fields: a Time-In stores it as requestId, a Time-Out as checkOutRequestId
 async function findReplay(rid, userId) {
   if (!rid) return null;
   let prior = await Attendance.findOne({ requestId: rid });
@@ -194,13 +159,7 @@ async function findReplay(rid, userId) {
   return { attendance: prior, action, replayed: true, ...(action === 'checkin' ? { deducted: false } : {}) };
 }
 
-// RFID tap: no explicit intent, so it toggles - open session => Time-Out,
-// otherwise Time-In. The open/closed state is read from the DB inside the
-// member's lock, so consecutive taps alternate IN, OUT, IN, OUT... in the
-// order they arrive. A tap that still loses a race (another process, the admin
-// screen) is a duplicate, not a new action. With a requestId (the bridge's
-// per-tap scanId) a retried tap returns the original result instead of
-// toggling again.
+// RFID tap
 async function toggle({ user, now = new Date(), rfidCardId, memberType, requestId } = {}) {
   const rid = cleanRequestId(requestId);
   return withKeyLock(`member:${user._id}`, async () => {
@@ -222,7 +181,7 @@ async function toggle({ user, now = new Date(), rfidCardId, memberType, requestI
   });
 }
 
-// Public single-action entry points (admin manual attendance): same lock.
+// Public single-action entry points (admin manual attendance): same lock
 const checkIn = (args = {}) => withKeyLock(`member:${args.user && args.user._id}`, () => doCheckIn(args));
 const checkOut = (args = {}) => withKeyLock(`member:${args.user && args.user._id}`, () => doCheckOut(args));
 

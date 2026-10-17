@@ -14,16 +14,8 @@ const submitPayment = async (req, res, next) => {
     const { referenceNumber, paymentMethod, planId } = req.body;
     const screenshot = req.file ? req.file.path : undefined;
 
-    // Reject a reference number that's already been submitted (pending,
-    // approved, or rejected) under the same payment method — prevents a
-    // single real transaction being used to spin up multiple Payment
-    // records, which an admin could accidentally approve more than once.
-    // This route's own validator (paymentRoutes.js) still requires
-    // referenceNumber for every member-submitted payment, so this check
-    // stays exactly as strict as before — it's unaffected by
-    // referenceNumber becoming optional at the schema level, since that
-    // relaxation was for admin-recorded cash payments, which never reach
-    // this controller at all (see adminController.createManualPayment).
+    // Reject a reference number that's already been submitted
+    // Reject a reference number that's already been submitted (pending, approved, or rejected) under the same payment method
     const existing = await Payment.findOne({ referenceNumber, paymentMethod });
     if (existing) {
       throw httpError('This reference number has already been submitted', 400);
@@ -38,10 +30,7 @@ const submitPayment = async (req, res, next) => {
       throw httpError('Amount is required when no plan is specified', 400);
     }
 
-    // Accidental double submission: a second PENDING payment for the same
-    // plan would, once both are approved, stack two memberships. A genuine
-    // renewal is still allowed — just not while an identical request is
-    // still waiting for the front desk.
+    // Accidental double submission
     if (planId) {
       const pendingSamePlan = await Payment.findOne({ userId: req.user._id, planId, status: 'pending' });
       if (pendingSamePlan) {

@@ -1,9 +1,5 @@
-// test/attendanceHistory.test.js - run with:  npm test
-//
-// Read-side labelling for the Member and Admin attendance tables: several
-// sessions on one date stay separate rows, each gets its own session number,
-// open sessions are "Inside" (Time-Out empty), and date filters are Manila-day
-// inclusive. Uses the in-memory store (verifies logic, not real MongoDB).
+// test/attendanceHistory.test.js - run with: npm test
+// test/attendanceHistory.test.js - run with: npm test Read-side labelling for the Member and Admin attendance tables
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -49,7 +45,6 @@ test('open session today is Inside; open row from an earlier day is No time-out'
   const today = out.find((r) => r.dayKey === '2026-10-10');
   assert.equal(yesterday.status, 'No time-out');
   assert.equal(today.status, 'Inside');
-  // numbering restarts each day
   assert.equal(yesterday.sessionNo, 1);
   assert.equal(today.sessionNo, 1);
 });
@@ -88,7 +83,7 @@ test('dateFilter: Manila-day inclusive range, ISO instants still accepted, bad d
   const r = history.dateFilter('2026-10-10', '2026-10-10');
   assert.equal(r.ok, true);
   assert.equal(+r.range.$gte, +at('2026-10-10', '00:00'));
-  assert.equal(+r.range.$lte, +at('2026-10-10', '23:59') + 59999); // 23:59:59.999
+  assert.equal(+r.range.$lte, +at('2026-10-10', '23:59') + 59999);
   assert.equal(history.dateFilter().range, null);
 
   const iso = history.dateFilter('2026-10-04T00:00:00.000Z', '2026-10-10T23:59:59.999Z');
